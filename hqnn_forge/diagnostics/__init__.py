@@ -6,10 +6,11 @@ circuit source: what the circuit costs on hardware, and later, how it trains.
 
 Exported symbols
 ----------------
-CircuitSummary     Frozen record: qubits, depth, gate counts, trainable parameters.
-circuit_summary    Build a CircuitSummary from an encoding layer or a hybrid classifier.
-draw_circuit       Text drawing of the same circuit, for logs and notebooks.
-LOGICAL_GATE_SET   The gate names circuits are decomposed to before counting.
+CircuitSummary           Frozen record: qubits, depth, gate counts, trainable parameters.
+circuit_summary          Build a CircuitSummary from an encoding layer or a hybrid classifier.
+draw_circuit             Text drawing of the same circuit, for logs and notebooks.
+count_inert_parameters   Trainable gate parameters that can never reach a measurement.
+LOGICAL_GATE_SET         The gate names circuits are decomposed to before counting.
 gradient_variance        Variance of the cost gradient over random weight draws.
 gradient_variance_sweep  The same over a grid of qubit and layer counts.
 GradientVarianceResult   Result of gradient_variance.
@@ -26,6 +27,7 @@ from hqnn_forge.diagnostics.circuit import (
     LOGICAL_GATE_SET,
     CircuitSummary,
     circuit_summary,
+    count_inert_parameters,
     draw_circuit,
 )
 from hqnn_forge.diagnostics.fisher import (
@@ -50,6 +52,7 @@ __all__: list[str] = [
     "FisherSpectrum",
     "GradientVarianceResult",
     "circuit_summary",
+    "count_inert_parameters",
     "draw_circuit",
     "effective_dimension",
     "effective_dimension_from_spectra",
