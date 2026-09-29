@@ -18,7 +18,8 @@ Opt-in only
 The run needs the Kaggle dataset (not redistributable) and days of state-vector
 simulation at ~2 s per 256-sample batch, so it is skipped unless
 ``HQNN_FORGE_REPRODUCE=1`` is set, skipped without the dataset, and marked
-``reproducibility`` and ``slow``.  Run it deliberately with::
+``reproducibility``, ``slow`` and ``may_skip`` (so the skip does not fail CI
+under ``HQNN_FORGE_FAIL_ON_SKIP=1``).  Run it deliberately with::
 
     HQNN_FORGE_REPRODUCE=1 HQNN_FORGE_DATA=data/raw \\
         pytest tests/test_published_shnn_reproduction.py -m reproducibility -s
@@ -218,6 +219,7 @@ def test_recipe_runs_end_to_end() -> None:
 
 @pytest.mark.reproducibility
 @pytest.mark.slow
+@pytest.mark.may_skip  # opt-in: skips in CI even under HQNN_FORGE_FAIL_ON_SKIP=1
 def test_published_mcc_is_reproduced() -> None:
     if os.environ.get(REPRODUCE_ENV) != "1":
         pytest.skip(f"opt-in: set {REPRODUCE_ENV}=1 (days of simulation; see module docstring)")
