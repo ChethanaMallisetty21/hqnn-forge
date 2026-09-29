@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model's config repeats its initial weights
 - `hqnn_forge.utils.train_mode`: the train-mode counterpart of `eval_mode`, which keeps a
   submodule the caller froze in eval mode and restores every submodule's mode on exit
+- `load_credit_card_fraud(download=True)` passes the Kaggle CLI's progress through as it runs,
+  stops a download that prints nothing for 120 s or runs past 3600 s with a
+  `DatasetDownloadError` saying which (and repeating the command to run by hand), and removes
+  the partial files a failed or interrupted download created. Both bounds are fixed; the
+  loader's signature is unchanged
 
 - `ClassicalBaseline` (a plain MLP with the classifiers' interface) and
   `hqnn_forge.utils.classical_baseline(model)`, which builds the untrained classical control
