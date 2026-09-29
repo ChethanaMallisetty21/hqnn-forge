@@ -120,6 +120,11 @@ jobs:
       run: |
         pytest tests/ -v
 
+    # The >>> examples in the package's docstrings, which drift silently
+    # otherwise. Run in every job so they hold at the floors and the lock too.
+    - name: Run doctests
+      run: pytest --doctest-modules hqnn_forge -v
+
   # The matrix above installs the latest versions satisfying the open ">=" floors,
   # which is the early warning that an upstream release broke us. This job installs
   # the exact resolution recorded in uv.lock instead, so a Dependabot lockfile bump
@@ -154,6 +159,9 @@ jobs:
       env:
         HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: uv run --frozen pytest tests/ -v
+
+    - name: Run doctests
+      run: uv run --frozen pytest --doctest-modules hqnn_forge -v
 
   # The two matrices above never install the declared floors: test resolves to
   # the newest versions the ">=" constraints allow and test-locked to whatever
@@ -205,3 +213,6 @@ jobs:
       env:
         HQNN_FORGE_FAIL_ON_SKIP: "1"
       run: uv run --no-sync pytest tests/ -v --ignore=tests/test_evaluation_plots.py
+
+    - name: Run doctests
+      run: uv run --no-sync pytest --doctest-modules hqnn_forge -v
