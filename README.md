@@ -413,6 +413,8 @@ and versioning policy this project follows.
 - Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
 - Wilcoxon (1945) — *Individual comparisons by ranking methods*
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
+- Efron (1987) — *Better bootstrap confidence intervals*
+- Efron & Tibshirani (1993) — *An Introduction to the Bootstrap*
 - Demšar (2006) — *Statistical Comparisons of Classifiers over Multiple Data Sets*
 - Friedman (1937) — *The Use of Ranks to Avoid the Assumption of Normality Implicit in the Analysis of Variance*
 - Iman & Davenport (1980) — *Approximations of the Critical Region of the Friedman Statistic*
