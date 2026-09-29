@@ -83,6 +83,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   angle counted as one parameter. `ClassicalBaseline` takes `init_seed` like the other
   classifiers, and the builder carries the hybrid's `init_seed` over, so a seeded hybrid gets
   a seeded control
+- `hqnn_forge.benchmark.run_benchmark`: a hybrid model against its matched classical control
+  on identical folds of several datasets, one row per dataset and model (MCC, parameters,
+  MCC per 1,000 parameters, training time, paired Wilcoxon test), with `write_csv` and
+  `examples/benchmark.py`
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input
