@@ -119,6 +119,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   afterwards. A given `random_state` therefore yields different initial weights, dropout
   masks and batch order than before
 
+- `gradient_variance` measures layers with several trainable tensors, such as
+  `DataReuploadingLayer(trainable_input_scaling=True)`, instead of refusing them:
+  `total_variance` sums over the whole gradient vector, the init draws only the `weights`
+  angles, and the new `GradientVarianceResult.per_tensor` maps each tensor to its variance.
+  `per_parameter` keeps the weight tensor's shape for a single-tensor layer and is the flat
+  concatenation otherwise
+
 ### Fixed
 - `circuit_summary` and `count_inert_parameters` raised `TypeError` with PennyLane's
   graph-based decomposition enabled (`qml.decomposition.enable_graph()`), which requires a
