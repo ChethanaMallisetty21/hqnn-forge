@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 
 import pytest
 import torch
@@ -148,3 +148,18 @@ def _cnot_pairs(target: object) -> list[tuple[int, int]]:
 def cnot_pairs() -> Callable[[object], list[tuple[int, int]]]:
     """``_cnot_pairs`` as a fixture, for the same reason as ``grad_of``."""
     return _cnot_pairs
+
+
+@pytest.fixture(autouse=True)
+def _fresh_device_fallback() -> Iterator[None]:
+    """
+    Forget backends that failed to initialise before and after every test.
+    The library remembers them for the whole process, so a test that fakes a
+    failing ``qml.device`` would otherwise leave that backend marked as
+    failed for every test after it.
+    """
+    from hqnn_forge.encoding.angle_embedding import reset_device_fallback
+
+    reset_device_fallback()
+    yield
+    reset_device_fallback()
