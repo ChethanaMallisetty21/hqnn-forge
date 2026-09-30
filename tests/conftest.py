@@ -15,6 +15,7 @@ opt-in (``HQNN_FORGE_REPRODUCE=1`` and a dataset CI does not have), carries
 
 from __future__ import annotations
 
+import functools
 import os
 from collections.abc import Callable, Generator
 
@@ -37,6 +38,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         f"may_skip: the test may skip even under {FAIL_ON_SKIP_ENV}=1, e.g. "
         "because it needs hardware the CI runners do not have or is opt-in",
+    )
+    config.addinivalue_line(
+        "markers",
+        "requires_lightning: skip unless pennylane-lightning can create a lightning.qubit device",
     )
 
 
@@ -82,6 +87,26 @@ def pytest_make_collect_report(
         report.outcome = "failed"
         report.longrepr = _skip_failure(collector.nodeid, report)
     return report
+
+
+@functools.cache
+def _lightning_available() -> bool:
+    import pennylane as qml
+
+    try:
+        qml.device("lightning.qubit", wires=1)
+    except Exception:  # noqa: BLE001 - any failure means "not installed"
+        return False
+    return True
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    # The one shared lightning check.  A marker rather than an importable
+    # skipif object: test modules do not import conftest (see grad_of below),
+    # and ``pytest.mark.requires_lightning`` works on functions, classes and
+    # pytest.param alike.
+    if item.get_closest_marker("requires_lightning") is not None and not _lightning_available():
+        pytest.skip("pennylane-lightning not installed")
 
 
 def _grad(tensor: torch.Tensor) -> torch.Tensor:
