@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
+from typing import Any, TypedDict, TypeVar
 
 import pytest
 import torch
 
 import hqnn_forge
+from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.models import (
     ClassicalBaseline,
     HybridBinaryClassifier,
@@ -22,7 +24,13 @@ from hqnn_forge.models import (
 from hqnn_forge.utils import checkpoint as ckpt
 from hqnn_forge.utils import load_checkpoint, save_checkpoint
 
-CPU = dict(device_name="default.qubit", diff_method="backprop")
+
+class _Backend(TypedDict):
+    device_name: DeviceName
+    diff_method: DiffMethod
+
+
+CPU: _Backend = {"device_name": "default.qubit", "diff_method": "backprop"}
 
 MODELS = [
     pytest.param(HybridBinaryClassifier, dict(encoding_type="angle"), id="serial-angle"),
@@ -48,7 +56,11 @@ MODELS = [
 ]
 
 
-def _trained(cls: type, extra: dict) -> torch.nn.Module:
+Classifier = HybridBinaryClassifier | ParallelHybridClassifier
+C = TypeVar("C", bound=Classifier)
+
+
+def _trained(cls: type[C], extra: dict[str, Any]) -> C:
     """A model whose weights differ from any fresh initialisation."""
     torch.manual_seed(0)
     model = cls(n_input_features=6, n_qubits=3, n_layers=2, **CPU, **extra)
@@ -67,7 +79,7 @@ def _save_payload(payload: dict, path: Path) -> Path:
 
 
 @pytest.fixture
-def saved(tmp_path: Path) -> tuple[torch.nn.Module, Path]:
+def saved(tmp_path: Path) -> tuple[HybridBinaryClassifier, Path]:
     model = _trained(HybridBinaryClassifier, {})
     path = tmp_path / "model.pt"
     save_checkpoint(model, path)
@@ -93,7 +105,9 @@ class TestRoundTrip:
             torch.testing.assert_close(loaded.state_dict()[key], value)
 
     @pytest.mark.parametrize("cls, extra", MODELS)
-    def test_identical_outputs_after_reload(self, cls: type, extra: dict, tmp_path: Path) -> None:
+    def test_identical_outputs_after_reload(
+        self, cls: type[Classifier], extra: dict[str, Any], tmp_path: Path
+    ) -> None:
         model = _trained(cls, extra)
         path = tmp_path / "model.pt"
         save_checkpoint(model, path)
@@ -171,7 +185,7 @@ class TestCheckpointsOlderThanAnOption:
     """
 
     @staticmethod
-    def _stripped(model: torch.nn.Module, path: Path, out: Path) -> Path:
+    def _stripped(model: Classifier, path: Path, out: Path) -> Path:
         """
         ``path``'s payload as a file from before #131: every post-#131 key
         removed from its config, and no ``known_args``, which such a file
@@ -188,7 +202,7 @@ class TestCheckpointsOlderThanAnOption:
         "cls", [HybridBinaryClassifier, ParallelHybridClassifier], ids=["serial", "parallel"]
     )
     def test_it_loads_and_predicts_what_the_saved_model_predicted(
-        self, cls: type, tmp_path: Path
+        self, cls: type[Classifier], tmp_path: Path
     ) -> None:
         model = _trained(cls, {})
         old = self._stripped(model, tmp_path / "new.pt", tmp_path / "old.pt")
@@ -246,7 +260,7 @@ class TestFailures:
             TypeError,
             match="supports the classifiers in hqnn_forge.models.*got torch.nn.modules.linear.Linear",
         ):
-            save_checkpoint(torch.nn.Linear(2, 1), tmp_path / "x.pt")
+            save_checkpoint(torch.nn.Linear(2, 1), tmp_path / "x.pt")  # type: ignore[arg-type]
 
     def test_subclass_is_not_silently_saved_as_parent(self, tmp_path: Path) -> None:
         class Custom(HybridBinaryClassifier):
@@ -389,6 +403,7 @@ class TestFailures:
         # -- the point of WEIGHT_SAFE_ARGS.  Assert that, not just that it loads.
         model, path = saved
         loaded = load_checkpoint(path, dropout_p=0.5)
+        assert isinstance(loaded, HybridBinaryClassifier)
         assert loaded.get_config()["dropout_p"] == 0.5
         assert loaded.dropout.p == 0.5
         for (name, a), (_, b) in zip(model.state_dict().items(), loaded.state_dict().items()):
@@ -407,6 +422,7 @@ class TestFailures:
         # architecture opt-in nor mark the model so save_checkpoint refuses it.
         model, path = saved
         loaded = load_checkpoint(path, noise_level=0.1, noise_position="end")
+        assert isinstance(loaded, HybridBinaryClassifier)
         assert loaded.quantum_layer.noise_level == 0.1
         assert loaded.quantum_layer.noise_position == "end"
         for (name, a), (_, b) in zip(model.state_dict().items(), loaded.state_dict().items()):
