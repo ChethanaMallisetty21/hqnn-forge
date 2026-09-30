@@ -79,7 +79,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DatasetDownloadError` saying which (and repeating the command to run by hand), and removes
   the partial files a failed or interrupted download created. Both bounds are fixed; the
   loader's signature is unchanged
-
 - `ClassicalBaseline` (a plain MLP with the classifiers' interface) and
   `hqnn_forge.utils.classical_baseline(model)`, which builds the untrained classical control
   of a hybrid model with its trainable parameter count matched to the hybrid's, every rotation
@@ -97,6 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input
+- Trainable quantum kernels: `differentiable=True` on `encoded_states` and
+  `quantum_kernel_matrix`, `kernel_target_alignment` (centred) and `train_kernel_alignment`
+  to fit a `DataReuploadingLayer`'s weights to a task before the SVM
 - `hqnn_forge.kernels.overlap_kernel_matrix`: the kernel estimated entry by entry from the
   compute-uncompute circuit with optional shots and any device, and `nearest_psd` to
   project an estimate onto the positive semi-definite cone

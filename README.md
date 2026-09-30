@@ -420,6 +420,8 @@ BibTeX or APA.
 - Schuld & Petruccione (2018) — *Supervised Learning with Quantum Computers*
 - Lin et al. (2017) — *Focal Loss for Dense Object Detection*
 - King & Zeng (2001) — *Logistic Regression in Rare Events Data*
+- Hubregtsen et al. (2022) — *Training Quantum Embedding Kernels on Near-Term Quantum Computers*
+- Cortes, Mohri & Rostamizadeh (2012) — *Algorithms for Learning Kernels Based on Centered Alignment*
 - Chawla et al. (2002) — *SMOTE: Synthetic Minority Over-sampling Technique*
 - Wilcoxon (1945) — *Individual comparisons by ranking methods*
 - Kerby (2014) — *The simple difference formula: an approach to teaching nonparametric correlation*
