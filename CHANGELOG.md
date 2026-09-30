@@ -97,6 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hqnn_forge.utils.permute_quantum_layer`: the permutation null for quantum ablation, which
   runs the circuit and shuffles its readouts across the batch with a seedable generator, so
   they keep their distribution and lose only their link to the input
+- `hqnn_forge.kernels.overlap_kernel_matrix`: the kernel estimated entry by entry from the
+  compute-uncompute circuit with optional shots and any device, and `nearest_psd` to
+  project an estimate onto the positive semi-definite cone
 - Comparing several models over several datasets (Demšar 2006) in `hqnn_forge.evaluation`:
   `friedman_test` with the Iman–Davenport F, `nemenyi_critical_difference`,
   `compare_to_control` and `holm_correction`, NumPy-only
