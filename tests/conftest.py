@@ -115,7 +115,7 @@ def _cnot_pairs(target: object) -> list[tuple[int, int]]:
     if isinstance(target, qml.tape.QuantumScript):
         tape = target
     else:
-        tape = _logical_tape(target.qlayer, target.n_qubits)  # type: ignore[attr-defined]
+        tape = _logical_tape(target)  # type: ignore[arg-type]
     return [(int(op.wires[0]), int(op.wires[1])) for op in tape.operations if op.name == "CNOT"]
 
 
