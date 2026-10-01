@@ -79,7 +79,9 @@ from hqnn_forge.encoding._common import (
     measure_z,
     readout_wires,
     resolve_device,
+    shots_repr,
     validate_circuit_options,
+    validate_shots,
     variational_weight_shape,
 )
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
@@ -179,6 +181,7 @@ def build_amplitude_qnode(
     diff_method: DiffMethod = "adjoint",
     entangler: Entangler = "ring",
     readout: Readout = "all",
+    shots: int | None = None,
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the amplitude feature map.
@@ -210,6 +213,7 @@ def build_amplitude_qnode(
         raise ValueError(f"n_qubits must be ≥ 2 for the CNOT entangling ring; got {n_qubits}.")
     validate_circuit_options(n_qubits, entangler, readout)
 
+    validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_amplitude_embedding_circuit(
         n_qubits, n_layers, diff_method, entangler, readout
@@ -220,6 +224,7 @@ def build_amplitude_qnode(
         device=device,
         diff_method=diff_method,
         interface="torch",
+        shots=shots,
     )
     qnode = expand_batch_dimension(qnode, diff_method)
 
@@ -296,9 +301,12 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         Width of the input vectors, ``1 ≤ n_features ≤ 2**n_qubits``.
         Default: ``2**n_qubits`` (no padding).
     device_name:
-        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
-        falls back along ``lightning.qubit → default.qubit`` with a warning
-        per step.
+        PennyLane device name.  The simulators in
+        :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` fall back along
+        ``lightning.qubit → default.qubit`` with a warning per step when
+        unavailable; any other name (a plugin or hardware) is constructed as
+        given, and PennyLane's error surfaces if it cannot be.  Hardware
+        needs ``shots`` and ``diff_method="parameter-shift"``.
     diff_method:
         Gradient method.  See *Differentiation methods* above.
     entangler:
@@ -314,6 +322,9 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         in ``[0, 0.75]`` (default 0, noiseless) applied in train mode only,
         at ``"all"`` gates or at the ``"end"``, simulated exactly
         (``"density"``) or by Pauli trajectories.  See :mod:`hqnn_forge.noise`.
+    shots:
+        Finite-shot sampling, exactly as for
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
 
     Attributes
     ----------
@@ -343,6 +354,12 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
     torch.Size([4, 3])
     """
 
+    #: Re-applied by :func:`hqnn_forge.noise.apply_shots`, whose
+    #: parameter-shift QNode replays this circuit function: the check built
+    #: into it holds the construction-time ``diff_method``, which under
+    #: ``backprop`` would let parameter-shift differentiate the inputs.
+    _input_gradient_check = staticmethod(_check_input_gradient)
+
     def __init__(
         self,
         n_qubits: int = 8,
@@ -356,6 +373,7 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_position: Position = "all",
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
+        shots: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -385,6 +403,7 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
             diff_method=diff_method,
             entangler=entangler,
             readout=readout,
+            shots=shots,
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
@@ -392,7 +411,13 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
         }
         self.qlayer = qml.qnn.TorchLayer(qnode, weight_shapes)
         self._init_training_noise(
-            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
+            qnode,
+            n_qubits,
+            noise_level,
+            noise_position,
+            noise_method,
+            noise_trajectories,
+            shots=shots,
         )
 
     # ------------------------------------------------------------------
@@ -471,5 +496,6 @@ class AmplitudeEncodingLayer(TrainingNoiseMixin, nn.Module):
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "
             f"n_features={self.n_features}, "
-            f"n_params={sum(p.numel() for p in self.parameters())}{options}{self._noise_repr()}"
+            f"n_params={sum(p.numel() for p in self.parameters())}{options}"
+            f"{self._noise_repr()}{shots_repr(self.shots)}"
         )

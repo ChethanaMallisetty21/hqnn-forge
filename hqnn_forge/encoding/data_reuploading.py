@@ -96,7 +96,9 @@ from hqnn_forge.encoding._common import (
     measure_z,
     readout_wires,
     resolve_device,
+    shots_repr,
     validate_circuit_options,
+    validate_shots,
     variational_weight_shape,
 )
 from hqnn_forge.noise import NoiseMethod, Position, TrainingNoiseMixin
@@ -213,6 +215,7 @@ def build_data_reuploading_qnode(
     trainable_input_scaling: bool = False,
     entangler: Entangler = "ring",
     readout: Readout = "all",
+    shots: int | None = None,
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the data re-uploading circuit.
@@ -254,6 +257,7 @@ def build_data_reuploading_qnode(
             "global phase, so a single upload leaves the outputs independent of the inputs."
         )
 
+    validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
     circuit_fn = _make_data_reuploading_circuit(
         n_qubits, n_layers, rotation, trainable_input_scaling, entangler, readout
@@ -264,6 +268,7 @@ def build_data_reuploading_qnode(
         device=device,
         diff_method=diff_method,
         interface="torch",
+        shots=shots,
     )
     qnode = expand_batch_dimension(qnode, diff_method)
 
@@ -332,9 +337,12 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         Pauli axis of the embedding rotations.  Default: ``"X"``.
         ``"Z"`` requires ``n_layers ≥ 2``.
     device_name:
-        PennyLane device, one of :data:`DeviceName`.  An unavailable backend
-        falls back along ``lightning.qubit → default.qubit`` with a warning
-        per step.
+        PennyLane device name.  The simulators in
+        :data:`~hqnn_forge.encoding._common.KNOWN_DEVICES` fall back along
+        ``lightning.qubit → default.qubit`` with a warning per step when
+        unavailable; any other name (a plugin or hardware) is constructed as
+        given, and PennyLane's error surfaces if it cannot be.  Hardware
+        needs ``shots`` and ``diff_method="parameter-shift"``.
     diff_method:
         Gradient method.  Default: ``"adjoint"``.
     trainable_input_scaling:
@@ -357,6 +365,9 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         in ``[0, 0.75]`` (default 0, noiseless) applied in train mode only,
         at ``"all"`` gates or at the ``"end"``, simulated exactly
         (``"density"``) or by Pauli trajectories.  See :mod:`hqnn_forge.noise`.
+    shots:
+        Finite-shot sampling, exactly as for
+        :class:`~hqnn_forge.encoding.QuantumEncodingLayer`.
 
     Attributes
     ----------
@@ -396,6 +407,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
         noise_position: Position = "all",
         noise_method: NoiseMethod = "density",
         noise_trajectories: int = 1,
+        shots: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -417,6 +429,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
             trainable_input_scaling=trainable_input_scaling,
             entangler=entangler,
             readout=readout,
+            shots=shots,
         )
 
         weight_shapes: dict[str, tuple[int, ...]] = {
@@ -432,7 +445,13 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
             with torch.no_grad():
                 self.qlayer.input_scaling.fill_(1.0)
         self._init_training_noise(
-            qnode, n_qubits, noise_level, noise_position, noise_method, noise_trajectories
+            qnode,
+            n_qubits,
+            noise_level,
+            noise_position,
+            noise_method,
+            noise_trajectories,
+            shots=shots,
         )
 
     # ------------------------------------------------------------------
@@ -485,7 +504,7 @@ class DataReuploadingLayer(TrainingNoiseMixin, nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        options += self._noise_repr()
+        options += self._noise_repr() + shots_repr(self.shots)
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "

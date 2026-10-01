@@ -70,11 +70,24 @@ Two methods, chosen with ``noise_method``:
     unchanged.  The sites are placed by ``qml.noise.insert`` itself, so they
     are exactly the sites the ``"density"`` path puts channels on.  The
     draws use torch's global RNG, like dropout, so ``torch.manual_seed``
-    makes them reproducible.
+    makes them reproducible -- on an exact layer.  With ``shots`` the
+    readouts are also sampled by the device's own generator, which torch does
+    not seed, so such a layer does not repeat until #354.
+
+Shot noise
+----------
+The other error a device adds is sampling: every expectation value is
+estimated from a finite number of measurements.  A layer or classifier built
+with ``shots=N`` is sampled that way throughout (training with
+``parameter-shift``).  :func:`apply_shots` evaluates a model trained on exact
+values with ``N`` shots for the duration of a ``with`` block, and
+:func:`shot_sweep` repeats its predictions over a range of shot counts, like
+:func:`noise_sweep` over noise levels.
 """
 
 from __future__ import annotations
 
+import functools
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -89,6 +102,12 @@ from hqnn_forge._resolve import resolve_encoding_layer
 Position = Literal["all", "end"]
 NoiseMethod = Literal["density", "trajectories"]
 MAX_P = 0.75
+
+
+def qnode_shots(qnode: object) -> int | None:
+    """The shot count ``qnode`` samples with, or ``None`` for exact values."""
+    shots = getattr(getattr(qnode, "shots", None), "total_shots", None)
+    return shots if isinstance(shots, int) else None
 
 
 def validate_noise(
@@ -275,9 +294,16 @@ class TrainingNoiseMixin:
         noise_position: Position,
         noise_method: NoiseMethod,
         noise_trajectories: int,
+        *,
+        shots: int | None = None,
     ) -> None:
         """
         Validate the options and build the train-mode QNode (``None`` without noise).
+
+        With ``shots``, only ``noise_method="trajectories"`` is accepted: it runs
+        the layer's own sampled QNode, while the density method runs the exact
+        channel on ``default.mixed``, which would train on exact expectation
+        values in a layer meant to see sampled ones.
 
         Raises ``ValueError`` for an option out of range, whatever
         ``noise_level`` is, so a bad value does not wait for the day the noise
@@ -295,6 +321,12 @@ class TrainingNoiseMixin:
         self._training_noise_qnode = None
         if noise_level == 0.0:
             return
+        if shots is not None and noise_method == "density":
+            raise ValueError(
+                f"noise_method='density' simulates the exact channel and ignores shots={shots}; "
+                f"use noise_method='trajectories', which samples the noise on the layer's own "
+                f"shot-based QNode."
+            )
         if noise_method == "trajectories":
             self._training_noise_qnode = trajectory_noise_qnode(qnode, noise_level, noise_position)
             return
@@ -312,9 +344,33 @@ class TrainingNoiseMixin:
             qnode, n_qubits, noise_level, noise_position
         )
 
+    @property
+    def shots(self) -> int | None:
+        """
+        The shot count the layer samples with now; ``None`` for exact values.
+
+        Read from the QNode the layer runs, so it follows
+        :func:`apply_shots` (and is ``None`` inside a ``p > 0``
+        :func:`apply_depolarizing_noise` block, which simulates the exact
+        channel) instead of repeating the construction argument.
+        """
+        return qnode_shots(self.qlayer.qnode)
+
     def _run_circuit(self, x: torch.Tensor) -> torch.Tensor:
         """``qlayer(x)``, through the noisy QNode in train mode when there is one."""
         if self.training and self._training_noise_qnode is not None:
+            if (
+                self.noise_method == "density"
+                and getattr(self.qlayer, "_hqnn_shots_original", None) is not None
+                and getattr(self.qlayer, "_hqnn_noise_depth", 0) == 0
+            ):
+                # The density QNode simulates the exact channel and would
+                # train on exact values inside the shot block.
+                raise RuntimeError(
+                    "noise_method='density' training noise simulates the exact channel and "
+                    "would ignore apply_shots; evaluate in eval mode inside apply_shots, or "
+                    "build the layer with noise_method='trajectories', which samples."
+                )
             return run_with_training_noise(
                 self.qlayer, self._training_noise_qnode, x, self.noise_trajectories
             )
@@ -383,6 +439,17 @@ def apply_depolarizing_noise(
     if p > 0.0 and getattr(qlayer, "_hqnn_noise_original", None) is not None:
         raise RuntimeError("apply_depolarizing_noise cannot be nested on the same layer.")
     original = qlayer.qnode
+    # The noisy QNode simulates the exact channel on default.mixed, so a
+    # sampled layer (built with shots, or inside apply_shots) would silently
+    # return exact values here -- the reason density training noise refuses
+    # shots too.
+    shots = qnode_shots(original)
+    if p > 0.0 and shots is not None:
+        raise RuntimeError(
+            f"apply_depolarizing_noise simulates the exact channel and would ignore the "
+            f"layer's shots={shots}; evaluate the noise without shots, or the shots "
+            f"without the noise block."
+        )
     # Build the replacement before touching the layer. default.mixed refuses
     # more than 23 wires, and a failure here has to leave the layer as it was:
     # arming the guard first would leave it armed with no block to disarm it,
@@ -469,4 +536,160 @@ def noise_sweep(
             probs = predict(X)
         score = float(score_fn(y, probs)) if score_fn is not None and y is not None else None
         points.append(NoiseSweepPoint(float(p), probs, score))
+    return points
+
+
+# ---------------------------------------------------------------------------
+# Shot noise
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def apply_shots(model: nn.Module, shots: int | None) -> Iterator[nn.Module]:
+    """
+    Run ``model``'s quantum layer with ``shots`` samples per circuit inside the block.
+
+    Every expectation value is then estimated from ``shots`` measurements, as
+    on hardware: a readout with exact value ``⟨Z⟩`` comes back with standard
+    deviation ``sqrt((1 − ⟨Z⟩²) / shots)``.  This evaluates a model trained on
+    exact values under sampling, without rebuilding it or touching its
+    weights; ``shots=None`` gives exact values again, for a reference point.
+
+    The layer's circuit runs on its own device through a ``parameter-shift``
+    QNode, the one differentiation method that samples unbiased gradients, so
+    gradients inside the block are sampled too.  A layer with
+    ``noise_method="trajectories"`` training noise samples its train-mode
+    trajectories with the block's shots as well; one with ``"density"``
+    training noise, which simulates the exact channel, raises in train mode
+    (eval mode, where training noise is off, is unaffected).  The original
+    QNodes are restored on exit, including when the block raises.
+
+    Raises
+    ------
+    TypeError
+        If ``model`` has no quantum layer.
+    ValueError
+        If ``shots`` is not ``None`` or a positive ``int``.
+    RuntimeError
+        If the layer is already inside ``apply_shots`` or a ``p > 0``
+        :func:`apply_depolarizing_noise` block, whose exact channel shots
+        would not apply to.
+    """
+    # Imported here: hqnn_forge.encoding imports this module.
+    from hqnn_forge.encoding._common import expand_batch_dimension, validate_shots
+
+    validate_shots(shots, "parameter-shift")
+    layer, qlayer, _ = resolve_encoding_layer(model, "apply_shots")
+    if getattr(qlayer, "_hqnn_shots_original", None) is not None:
+        raise RuntimeError("apply_shots cannot be nested on the same layer.")
+    if getattr(qlayer, "_hqnn_noise_original", None) is not None:
+        raise RuntimeError(
+            "apply_shots cannot run inside apply_depolarizing_noise: the noise block "
+            "simulates the exact channel on default.mixed."
+        )
+    original = qlayer.qnode
+    func = original.func
+    # A circuit function that checks its own input gradients (amplitude
+    # embedding) holds the construction-time diff_method; under backprop its
+    # check would let parameter-shift differentiate the inputs here.
+    check = getattr(layer, "_input_gradient_check", None)
+    if check is not None:
+        circuit = func
+
+        @functools.wraps(circuit)
+        def func(inputs: torch.Tensor, *args: object, **kwargs: object) -> object:
+            check(inputs, "parameter-shift")
+            return circuit(inputs, *args, **kwargs)
+
+    sampled = expand_batch_dimension(
+        qml.QNode(
+            func,
+            original.device,
+            interface="torch",
+            diff_method="parameter-shift",
+            shots=shots,
+        ),
+        "parameter-shift",
+    )
+    # Train-mode trajectory noise runs its own copy of the QNode; it is
+    # rebuilt on the sampled one, so it samples with the block's shots.
+    noise_original = getattr(layer, "_training_noise_qnode", None)
+    noise_sampled = (
+        trajectory_noise_qnode(sampled, layer.noise_level, layer.noise_position)  # type: ignore[attr-defined]
+        if noise_original is not None and getattr(layer, "noise_method", None) == "trajectories"
+        else noise_original
+    )
+    qlayer._hqnn_shots_original = original
+    qlayer.qnode = sampled
+    if noise_sampled is not noise_original:
+        layer._training_noise_qnode = noise_sampled  # type: ignore[attr-defined]
+    try:
+        yield model
+    finally:
+        qlayer.qnode = original
+        qlayer._hqnn_shots_original = None
+        if noise_sampled is not noise_original:
+            layer._training_noise_qnode = noise_original  # type: ignore[attr-defined]
+
+
+class ShotSweepPoint(NamedTuple):
+    """One shot count of a sweep."""
+
+    shots: int | None
+    #: ``(n_repeats, *predict_proba(X).shape)``: ``(n_repeats, n_samples)``
+    #: for a binary classifier, ``(n_repeats, n_samples, n_classes)`` for
+    #: :class:`~hqnn_forge.models.MulticlassHybridClassifier`.
+    probabilities: torch.Tensor
+    #: Scores of the repeated evaluations, or None without ``score_fn``.
+    scores: list[float] | None
+
+
+def shot_sweep(
+    model: nn.Module,
+    X: torch.Tensor,
+    shots: Iterable[int | None],
+    *,
+    n_repeats: int = 5,
+    y: torch.Tensor | None = None,
+    score_fn: Callable[[torch.Tensor, torch.Tensor], float] | None = None,
+) -> list[ShotSweepPoint]:
+    """
+    Predict ``X`` ``n_repeats`` times at each shot count, without retraining.
+
+    The repeats show the spread shot noise alone puts on the predictions and
+    on the score; ``None`` in ``shots`` gives the exact reference (its repeats
+    agree).  Arguments as for :func:`noise_sweep`.
+
+    Raises
+    ------
+    ValueError
+        If ``n_repeats < 1``, only one of ``y`` and ``score_fn`` is given, or a
+        shot count is invalid -- checked before the first evaluation.
+    TypeError
+        If ``model`` has no ``predict_proba``.
+    """
+    from hqnn_forge.encoding._common import validate_shots
+
+    if (y is None) != (score_fn is None):
+        raise ValueError("pass both y and score_fn, or neither.")
+    if n_repeats < 1:
+        raise ValueError(f"n_repeats must be ≥ 1; got {n_repeats}.")
+    predict = getattr(model, "predict_proba", None)
+    if not callable(predict):
+        raise TypeError(
+            f"shot_sweep needs a model with predict_proba; got {type(model).__name__}."
+        )
+    counts = list(shots)
+    for count in counts:
+        validate_shots(count, "parameter-shift")
+    points = []
+    for count in counts:
+        with apply_shots(model, count):
+            runs = torch.stack([predict(X) for _ in range(n_repeats)])
+        scores = (
+            [float(score_fn(y, row)) for row in runs]
+            if score_fn is not None and y is not None
+            else None
+        )
+        points.append(ShotSweepPoint(count, runs, scores))
     return points
