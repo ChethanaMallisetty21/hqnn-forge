@@ -106,7 +106,7 @@ from hqnn_forge.models._trunk import (
 )
 from hqnn_forge.models.base import BinaryClassifierBase
 from hqnn_forge.models.hybrid_classifier import _PUBLISHED_SHNN
-from hqnn_forge.noise import NoiseMethod, Position
+from hqnn_forge.noise import Channel, NoiseMethod, Position
 from hqnn_forge.utils.rng import as_seed, seeded_rng
 
 
@@ -198,8 +198,10 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
     ``readout="first"``, ``encoder_activation="sigmoid"``,
     ``init_strategy="normal"``; see :meth:`published_shnn`.
     noise_level:
-        Training-time depolarizing probability for the quantum layer, in
-        ``[0, 0.75]``.  Default: ``0.0`` (noiseless).  Applied in train mode
+        Training-time strength of ``noise_channel`` for the quantum layer: the
+        depolarizing probability in ``[0, 0.75]``, or the damping or flip
+        probability in ``[0, 1]`` for the other channels.  Default: ``0.0``
+        (noiseless).  Applied in train mode
         only.  With the default ``noise_method`` it runs on ``default.mixed``
         with backprop, whose memory grows as ``batch × 4^n_qubits`` per
         operation: practical up to about 6 qubits.  See :mod:`hqnn_forge.noise`.
@@ -245,6 +247,11 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         reach, so a model with shots does not repeat run to run (#354).
         :func:`hqnn_forge.noise.apply_shots` evaluates a model with a finite
         shot count without rebuilding it.
+    noise_channel:
+        The channel ``noise_level`` is the strength of: ``"depolarizing"``
+        (default), ``"amplitude_damping"``, ``"phase_damping"``,
+        ``"bit_flip"`` or ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  The
+        trajectory method samples the Pauli ones only.
 
     Attributes
     ----------
@@ -292,6 +299,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
         noise_trajectories: int = 1,
         trainable_input_scaling: bool = False,
         shots: int | None = None,
+        noise_channel: Channel = "depolarizing",
     ) -> None:
         super().__init__()
         init_seed = as_seed(init_seed)
@@ -325,6 +333,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
                 noise_trajectories=noise_trajectories,
                 trainable_input_scaling=trainable_input_scaling,
                 shots=shots,
+                noise_channel=noise_channel,
             )
 
             # Validated before the classical branch is built, as before the shared
@@ -364,6 +373,7 @@ class ParallelHybridClassifier(QuantumTrunk, BinaryClassifierBase):
                 classical_encoder=classical_encoder,
                 trainable_input_scaling=trainable_input_scaling,
                 shots=shots,
+                noise_channel=noise_channel,
             )
 
             # ── Classical head ────────────────────────────────────────────────
