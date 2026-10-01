@@ -169,6 +169,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run_benchmark(noise_levels=...)`: each trained hybrid model also scored under
   inference-time depolarising noise, compared per level with the noise-free control, with the
   noise level at which it stops being significantly better (#296)
+- `hqnn_forge.sklearn.QuantumKernelClassifier`: an `SVC(kernel="precomputed")` on the fidelity
+  kernel of any encoding, with optional kernel-target alignment, depolarising noise and Platt
+  probabilities, for `cross_val_score`, `GridSearchCV` and `Pipeline`; not yet usable in
+  `run_benchmark` (see #409) (#339)
 - The encoding layer contract, exported from `hqnn_forge.encoding`: the `EncodingLayer`
   protocol (`qlayer`, `n_qubits`, `n_features`, `prepare_inputs`, with `forward(x)` equal to
   `qlayer(prepare_inputs(x))` outside training noise), the weaker `CircuitLayer` (`qlayer`,
