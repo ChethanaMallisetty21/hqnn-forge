@@ -336,16 +336,18 @@ def validate_device_shots(device: qml.devices.Device, shots: int | None) -> None
     """
     Raise ``ValueError`` if *device* has finite shots but *shots* is ``None``.
 
-    A device configured with finite shots samples expectation values rather than
-    evaluating them analytically.  When *shots* is ``None``, the QNode would
-    default to analytic expectation values, which a sampling device refuses.
+    A real sampling device (hardware, ``"qiskit.remote"``, ...) fails at the
+    first forward pass when given ``shots=None``, typically with the default
+    ``diff_method="adjoint"``.  Raising at construction with an informative
+    message guides users to pass explicit ``shots`` and ``parameter-shift``.
     """
     dev_shots = getattr(device, "shots", None)
     total_shots = getattr(dev_shots, "total_shots", dev_shots)
     if total_shots is not None and shots is None:
         raise ValueError(
-            f"Device {device.name!r} has finite shots ({total_shots}), but shots=None was requested. "
-            "This device samples, so pass shots= and diff_method='parameter-shift'."
+            f"Device {device.name!r} has finite shots ({total_shots}), but "
+            "shots=None was requested. This device samples, so pass shots= and "
+            "diff_method='parameter-shift'."
         )
 
 
