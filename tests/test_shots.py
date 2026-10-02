@@ -15,6 +15,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+import pennylane as qml
 import pytest
 import torch
 
@@ -340,3 +341,63 @@ def test_any_pennylane_device_runs_a_layer() -> None:
     x = torch.rand(3, 2)
     with torch.no_grad():
         torch.testing.assert_close(mixed(x), exact(x), atol=1e-6, rtol=0)
+
+
+@pytest.mark.parametrize(
+    "layer_cls, module_name, kwargs, in_features, expected_shape",
+    [
+        (
+            QuantumEncodingLayer,
+            "hqnn_forge.encoding.angle_embedding",
+            {"n_qubits": 3, "n_layers": 1},
+            3,
+            (2, 3),
+        ),
+        (
+            IQPEncodingLayer,
+            "hqnn_forge.encoding.iqp_embedding",
+            {"n_qubits": 3, "n_layers": 1},
+            3,
+            (2, 3),
+        ),
+        (
+            AmplitudeEncodingLayer,
+            "hqnn_forge.encoding.amplitude_embedding",
+            {"n_features": 4, "n_qubits": 2, "n_layers": 1},
+            4,
+            (2, 2),
+        ),
+        (
+            DataReuploadingLayer,
+            "hqnn_forge.encoding.data_reuploading",
+            {"n_qubits": 3, "n_layers": 1},
+            3,
+            (2, 3),
+        ),
+    ],
+)
+def test_finite_shot_device_raises_on_default_shots(
+    monkeypatch: pytest.MonkeyPatch,
+    layer_cls: Any,
+    module_name: str,
+    kwargs: dict[str, Any],
+    in_features: int,
+    expected_shape: tuple[int, int],
+) -> None:
+    def fake_resolve(device_name: str, n_qubits: int) -> qml.devices.Device:
+        return qml.device("default.qubit", wires=n_qubits, shots=100)
+
+    monkeypatch.setattr(f"{module_name}.resolve_device", fake_resolve)
+
+    with pytest.raises(ValueError, match="device samples"):
+        layer_cls(**kwargs, device_name="custom.sampling.device")
+
+    layer = layer_cls(
+        **kwargs,
+        device_name="custom.sampling.device",
+        shots=100,
+        diff_method="parameter-shift",
+    )
+    x = torch.rand(2, in_features)
+    out = layer(x)
+    assert out.shape == expected_shape
