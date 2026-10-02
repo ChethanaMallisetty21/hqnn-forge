@@ -80,9 +80,28 @@ does, and needs `diff_method="parameter-shift"`; hardware devices need both.
 | `lightning.gpu` | State-vector simulator on NVIDIA GPUs via cuQuantum (cuStateVec) | `pip install pennylane-lightning-gpu`; Linux, an NVIDIA GPU with compute capability ≥ 7.0, a CUDA 12 driver. The wheel pulls in `custatevec-cu12` |
 | `lightning.kokkos` | State-vector simulator on Kokkos; OpenMP-parallel CPU on the PyPI wheel, CUDA or HIP GPUs when built from source | `pip install pennylane-lightning-kokkos` for the CPU build; see the [PennyLane-Lightning docs](https://docs.pennylane.ai/projects/lightning/) for a GPU build |
 
-The GPU backends pay off at larger qubit counts or batch sizes; at the 8 qubits the library
-targets, `lightning.qubit` is usually the fastest option. Both accelerated devices support the
-same `diff_method="adjoint"` as `lightning.qubit`.
+The GPU backends pay off at larger qubit counts or batch sizes. Both accelerated devices support
+the same `diff_method="adjoint"` as `lightning.qubit`.
+
+**Which to train with.** `lightning.qubit` with adjoint, the default, runs a batch one sample
+at a time; `default.qubit` with `diff_method="backprop"` vectorises it. Measured for one
+training step at batch 64 (`examples/benchmark_batching.py --crossover`):
+
+| qubits | `lightning.qubit` / adjoint | `default.qubit` / backprop | backprop vs lightning |
+|---|---|---|---|
+| 8 | 0.36 s, +11 MB | 0.03 s, +10 MB | 12× faster, same memory |
+| 10 | 0.44 s, +14 MB | 0.08 s, +55 MB | 5.5× faster, 4× the memory |
+| 12 | 0.64 s, +18 MB | 0.25 s, +283 MB | 2.6× faster, 16× the memory |
+| 14 | 1.47 s, +21 MB | 1.66 s, +1125 MB | about as fast, 54× the memory |
+| 16 | 8.85 s, +31 MB | 10.42 s, +3129 MB | about as fast, 100× the memory |
+
+Single runs, which vary by some tens of percent; at 14 and 16 qubits either path can come out
+ahead. So for batched training at 8 to 10 qubits, pass
+`device_name="default.qubit", diff_method="backprop"`: it is 5-12× faster for little memory.
+At 12 qubits it is still about 2.6× faster but takes 16× the memory. From about 14 qubits the
+speed advantage is gone, while backprop's memory keeps growing fourfold per two qubits and
+adjoint's stays flat, so lightning is the better choice there. For single samples lightning is
+faster.
 
 ---
 
