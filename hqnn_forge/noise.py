@@ -349,6 +349,24 @@ MAX_TRAINING_NOISE_QUBITS = 6
 """Above this many qubits, a layer built with ``noise_method="density"`` warns."""
 
 
+def _eval_qnode_for(qnode: qml.QNode) -> qml.QNode:
+    """
+    Return an undifferentiated (``diff_method=None``) clone of *qnode* for adjoint
+    evaluation passes under ``torch.no_grad()`` (#426, #439).
+
+    Preserves the execution configuration and transforms pipeline (including
+    ``broadcast_expand``) while skipping unused adjoint Jacobian evaluations.
+    The updated QNode is cached on *qnode* to avoid repeated creation.
+    """
+    if getattr(qnode, "diff_method", None) != "adjoint":
+        return qnode
+    eval_qnode: qml.QNode | None = getattr(qnode, "_hqnn_eval_qnode", None)
+    if eval_qnode is None:
+        eval_qnode = qnode.update(diff_method=None)
+        qnode._hqnn_eval_qnode = eval_qnode
+    return eval_qnode
+
+
 class TrainingNoiseMixin:
     """
     Training-time noise for an encoding layer: construction, dispatch and repr.
@@ -357,7 +375,9 @@ class TrainingNoiseMixin:
     ``noise_position``, ``noise_method`` and ``noise_trajectories``.  A layer
     calls :meth:`_init_training_noise` once its QNode exists, runs its circuit
     through :meth:`_run_circuit` (train mode with noise: the noisy QNode, else
-    ``qlayer`` itself) and appends :meth:`_noise_repr` to ``extra_repr``.
+    ``qlayer`` itself; eval passes under ``torch.no_grad()`` dispatch to an
+    undifferentiated QNode when ``diff_method="adjoint"``) and appends
+    :meth:`_noise_repr` to ``extra_repr``.
     Everything else -- validation at construction, the memory warning, the
     QNode swap and its restore, the precedence of
     :func:`apply_depolarizing_noise` -- happens here.
@@ -471,9 +491,20 @@ class TrainingNoiseMixin:
                     "would ignore apply_shots; evaluate in eval mode inside apply_shots, or "
                     "build the layer with noise_method='trajectories', which samples."
                 )
-            return run_with_training_noise(
-                self.qlayer, self._training_noise_qnode, x, self.noise_trajectories
-            )
+            target = self._training_noise_qnode
+            if not torch.is_grad_enabled():
+                target = _eval_qnode_for(target)
+            return run_with_training_noise(self.qlayer, target, x, self.noise_trajectories)
+        if (
+            not torch.is_grad_enabled()
+            and getattr(self.qlayer.qnode, "diff_method", None) == "adjoint"
+        ):
+            original = self.qlayer.qnode
+            self.qlayer.qnode = _eval_qnode_for(original)
+            try:
+                return self.qlayer(x)  # type: ignore[no-any-return]
+            finally:
+                self.qlayer.qnode = original
         return self.qlayer(x)  # type: ignore[no-any-return]
 
     def _noise_repr(self) -> str:

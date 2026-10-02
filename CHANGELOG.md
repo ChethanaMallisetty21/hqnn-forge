@@ -354,6 +354,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same numbers as before (#292)
 
 ### Fixed
+- Quantum encoding layers switch to an undifferentiated path during evaluation under
+  `torch.no_grad()`, avoiding computing unused adjoint Jacobians and cutting evaluation
+  runtime by up to 2.68× (measured on lightning.qubit with 8 qubits and batch size 256) (#439)
 - Encoding layers raise a construction-time `ValueError` when a resolved device has finite
   shots but `shots=None` was requested, guiding users to pass explicit `shots` and
   `diff_method="parameter-shift"` (#421)
