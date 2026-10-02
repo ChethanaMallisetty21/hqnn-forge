@@ -332,6 +332,25 @@ def validate_shots(shots: int | None, diff_method: str) -> None:
         )
 
 
+def validate_device_shots(device: qml.devices.Device, shots: int | None) -> None:
+    """
+    Raise ``ValueError`` if *device* has finite shots but *shots* is ``None``.
+
+    A real sampling device (hardware, ``"qiskit.remote"``, ...) fails at the
+    first forward pass when given ``shots=None``, typically with the default
+    ``diff_method="adjoint"``.  Raising at construction with an informative
+    message guides users to pass explicit ``shots`` and ``parameter-shift``.
+    """
+    dev_shots = getattr(device, "shots", None)
+    total_shots = getattr(dev_shots, "total_shots", dev_shots)
+    if total_shots is not None and shots is None:
+        raise ValueError(
+            f"Device {device.name!r} has finite shots ({total_shots}), but "
+            "shots=None was requested. This device samples, so pass shots= and "
+            "diff_method='parameter-shift'."
+        )
+
+
 def shots_repr(shots: int | None) -> str:
     """The ``extra_repr`` fragment for a finite shot count; empty for exact values."""
     return "" if shots is None else f", shots={shots}"

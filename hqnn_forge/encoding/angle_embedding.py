@@ -72,6 +72,7 @@ from hqnn_forge.encoding._common import (
     resolve_device,
     shots_repr,
     validate_circuit_options,
+    validate_device_shots,
     validate_shots,
     variational_weight_shape,
 )
@@ -363,6 +364,7 @@ def build_encoding_qnode(
 
     validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
+    validate_device_shots(device, shots)
     circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
 
     qnode = qml.QNode(

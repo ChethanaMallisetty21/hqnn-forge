@@ -81,6 +81,7 @@ from hqnn_forge.encoding._common import (
     resolve_device,
     shots_repr,
     validate_circuit_options,
+    validate_device_shots,
     validate_shots,
     variational_weight_shape,
 )
@@ -215,6 +216,7 @@ def build_amplitude_qnode(
 
     validate_shots(shots, diff_method)
     device = resolve_device(device_name, n_qubits)
+    validate_device_shots(device, shots)
     circuit_fn = _make_amplitude_embedding_circuit(
         n_qubits, n_layers, diff_method, entangler, readout
     )
