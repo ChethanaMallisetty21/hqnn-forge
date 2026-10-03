@@ -420,11 +420,8 @@ class StubSamplingDevice(qml.devices.Device):
     def preprocess(
         self, execution_config: qml.devices.ExecutionConfig | None = None
     ) -> tuple[qml.transforms.core.CompilePipeline, qml.devices.ExecutionConfig]:
-        program = qml.transforms.core.CompilePipeline()
+        program, config = self._inner.preprocess(execution_config)
         program.add_transform(qml.devices.preprocess.no_analytic, name=self.name)
-        inner_program, config = self._inner.preprocess(execution_config)
-        for t in inner_program:
-            program.add_transform(t)
         return program, config
 
     def execute(self, circuits: Any, execution_config: Any = None) -> Any:

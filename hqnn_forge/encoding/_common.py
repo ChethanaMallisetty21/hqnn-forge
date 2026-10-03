@@ -426,9 +426,17 @@ def validate_device_shots(device: qml.devices.Device, shots: int | None) -> None
                 device.preprocess(exec_config) if exec_config is not None else device.preprocess()
             )
             for transform_op in pipeline:
-                t_fn = getattr(transform_op, "transform", transform_op)
-                t_name = getattr(t_fn, "__name__", "") or getattr(transform_op, "__name__", "")
-                if "no_analytic" in t_name:
+                t_fn = getattr(transform_op, "tape_transform", None)
+                if t_fn is None:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", category=DeprecationWarning)
+                        t_fn = getattr(transform_op, "transform", transform_op)
+                t_name = (
+                    getattr(t_fn, "__name__", "")
+                    or getattr(transform_op, "__name__", "")
+                    or str(transform_op)
+                )
+                if "no_analytic" in t_name or "no_analytic" in str(transform_op):
                     raise ValueError(
                         f"Device {device.name!r} does not support analytic execution, but "
                         "shots=None was requested. This device samples, so pass shots= and "
