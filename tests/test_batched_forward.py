@@ -318,24 +318,72 @@ def test_no_grad_forward_computes_zero_derivatives(
 
 def test_no_grad_forward_preserves_transforms() -> None:
     """
-    Transforms on the QNode (e.g. compile passes or cancel_inverses) are preserved
-    when evaluating under torch.no_grad() (#426, #439).
+    Transforms applied to a QNode after a no_grad pass invalidate the layer's
+    eval-QNode cache and are preserved under torch.no_grad() (#426, #439).
     """
+
+    @qml.transform
+    def prepend_x(
+        tape: qml.tape.QuantumTape,
+    ) -> tuple[list[qml.tape.QuantumTape], Callable[[Any], Any]]:
+        new_ops = [qml.PauliX(0)] + list(tape.operations)
+        new_tape = tape.copy(operations=new_ops)
+        return [new_tape], lambda res: res[0]
+
     torch.manual_seed(0)
     layer = QuantumEncodingLayer(n_qubits=N_QUBITS, n_layers=1, diff_method="adjoint")
-    # Apply a transform to the QNode compile pipeline
-    layer.qlayer.qnode = qml.transforms.cancel_inverses(layer.qlayer.qnode)
     dev = layer.qlayer.qnode.device
     x = torch.randn(BATCH, N_QUBITS)
 
+    # 1. Warm cache with a no_grad pass before the transform
+    with torch.no_grad():
+        pre_transform_out = layer(x)
+
+    # 2. Apply transform to the QNode (creates a shallow copy)
+    layer.qlayer.qnode = prepend_x(layer.qlayer.qnode)
+
+    # 3. Post-transform no_grad pass: invalidates stale cache and computes 0 derivatives
     with torch.no_grad(), qml.Tracker(dev) as tracker:
         no_grad_out = layer(x)
     assert not no_grad_out.requires_grad
     assert tracker.totals.get("derivatives", 0) == 0
 
+    # 4. Compare with grad-enabled pass
     with qml.Tracker(dev) as tracker:
         grad_out = layer(x)
         grad_out.sum().backward()
     assert tracker.totals.get("derivatives", 0) > 0
 
     torch.testing.assert_close(no_grad_out, grad_out.detach())
+    assert not torch.allclose(no_grad_out, pre_transform_out)
+
+
+def test_no_grad_trajectory_noise_train_mode() -> None:
+    """
+    Under torch.no_grad() in train mode, a layer with trajectory noise evaluates
+    an undifferentiated QNode with zero derivatives while applying noise (#426, #439).
+    """
+    torch.manual_seed(42)
+    layer = QuantumEncodingLayer(
+        n_qubits=2,
+        n_layers=1,
+        diff_method="adjoint",
+        noise_method="trajectories",
+        noise_level=0.2,
+        noise_trajectories=1,
+    )
+    layer.train()
+    dev = layer.qlayer.qnode.device
+    x = torch.randn(BATCH, 2)
+
+    with torch.no_grad(), qml.Tracker(dev) as tracker:
+        noisy_no_grad = layer(x)
+
+    assert not noisy_no_grad.requires_grad
+    assert tracker.totals.get("derivatives", 0) == 0
+
+    # In eval mode without noise, the output must differ from the noisy output
+    layer.eval()
+    with torch.no_grad():
+        noiseless = layer(x)
+    assert not torch.allclose(noisy_no_grad, noiseless)
