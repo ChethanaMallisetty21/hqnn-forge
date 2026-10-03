@@ -404,3 +404,88 @@ def test_finite_shot_device_rejection_and_sampled_execution(
     with torch.no_grad():
         # each <Z> estimate has standard deviation <= 1/sqrt(10 000) = 0.01; allow 5 sigma
         torch.testing.assert_close(sampled(x), exact(x), atol=0.05, rtol=0)
+
+
+class StubSamplingDevice(qml.devices.Device):
+    """Stub device refusing analytic execution via no_analytic without device-level shots."""
+
+    def __init__(self, wires: int) -> None:
+        super().__init__(wires=wires, shots=None)
+        self._inner = qml.device("default.qubit", wires=wires)
+
+    @property
+    def name(self) -> str:
+        return "custom.sampling.device"
+
+    def preprocess(
+        self, execution_config: qml.devices.ExecutionConfig | None = None
+    ) -> tuple[qml.transforms.core.CompilePipeline, qml.devices.ExecutionConfig]:
+        program = qml.transforms.core.CompilePipeline()
+        program.add_transform(qml.devices.preprocess.no_analytic, name=self.name)
+        inner_program, config = self._inner.preprocess(execution_config)
+        for t in inner_program:
+            program.add_transform(t)
+        return program, config
+
+    def execute(self, circuits: Any, execution_config: Any = None) -> Any:
+        return self._inner.execute(circuits, execution_config)
+
+
+@pytest.mark.parametrize(
+    "layer_cls, module_name, kwargs, in_features",
+    [
+        (
+            QuantumEncodingLayer,
+            "hqnn_forge.encoding.angle_embedding",
+            {"n_qubits": 3, "n_layers": 1},
+            3,
+        ),
+        (
+            IQPEncodingLayer,
+            "hqnn_forge.encoding.iqp_embedding",
+            {"n_qubits": 3, "n_layers": 1},
+            3,
+        ),
+        (
+            AmplitudeEncodingLayer,
+            "hqnn_forge.encoding.amplitude_embedding",
+            {"n_features": 4, "n_qubits": 2, "n_layers": 1},
+            4,
+        ),
+        (
+            DataReuploadingLayer,
+            "hqnn_forge.encoding.data_reuploading",
+            {"n_qubits": 3, "n_layers": 1},
+            3,
+        ),
+    ],
+)
+def test_sampling_only_device_without_device_shots_rejection_and_sampled_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    layer_cls: Any,
+    module_name: str,
+    kwargs: dict[str, Any],
+    in_features: int,
+) -> None:
+    def fake_resolve(device_name: str, n_qubits: int) -> qml.devices.Device:
+        if device_name == "custom.sampling.device":
+            return StubSamplingDevice(wires=n_qubits)
+        return resolve_device(device_name, n_qubits)
+
+    monkeypatch.setattr(f"{module_name}.resolve_device", fake_resolve)
+
+    with pytest.raises(ValueError, match="device samples"):
+        layer_cls(**kwargs, device_name="custom.sampling.device")
+
+    torch.manual_seed(0)
+    exact = layer_cls(**kwargs)
+    sampled = layer_cls(
+        **kwargs,
+        device_name="custom.sampling.device",
+        shots=10_000,
+        diff_method="parameter-shift",
+    )
+    sampled.load_state_dict(exact.state_dict())
+    x = torch.rand(2, in_features)
+    with torch.no_grad():
+        torch.testing.assert_close(sampled(x), exact(x), atol=0.05, rtol=0)
