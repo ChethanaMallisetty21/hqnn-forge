@@ -337,6 +337,19 @@ def validate_shots(shots: int | None, diff_method: str) -> None:
         )
 
 
+def _raise_device_samples(device_name: str, *, finite_shots: int | None = None) -> None:
+    reason = (
+        f"has finite shots ({finite_shots})"
+        if finite_shots is not None
+        else "does not support analytic execution"
+    )
+    raise ValueError(
+        f"Device {device_name!r} {reason}, but "
+        "shots=None was requested. This device samples, so pass shots= and "
+        "diff_method='parameter-shift'."
+    )
+
+
 def validate_device_shots(device: qml.devices.Device, shots: int | None) -> None:
     """
     Raise ``ValueError`` if *device* only samples or has finite shots but *shots* is ``None``.
@@ -346,114 +359,52 @@ def validate_device_shots(device: qml.devices.Device, shots: int | None) -> None
     given ``shots=None``, typically with the default ``diff_method="adjoint"``.
     Raising at construction with an informative message guides users to pass
     explicit ``shots`` and ``diff_method='parameter-shift'``.
-
-    Detection strategy (PennyLane >= 0.45 API compatibility):
-    1. Check for finite device-level shots via ``device.shots.total_shots`` (kept for
-       backwards compatibility across PennyLane 0.45+ while device-level shots remain supported).
-    2. Check explicit attributes on the device (e.g. ``supports_analytic is False``
-       or ``analytic is False``).
-    3. Check legacy capabilities dictionary (``supports_analytic_computation is False``)
-       or modern ``DeviceCapabilities`` (measurement processes without analytic support).
-    4. Check the device's compile pipeline from ``device.preprocess()``: modern PennyLane
-       devices (PennyLane >= 0.38) forbid analytic evaluation by placing the
-       ``pennylane.devices.preprocess.no_analytic`` transform into the compile pipeline,
-       or by raising ``DeviceError`` when compiling an analytic expectation circuit.
     """
     if shots is not None:
         return
 
     # 1. Device-level shots (while supported in PennyLane)
     dev_shots = getattr(device, "shots", None)
-    total_shots = getattr(dev_shots, "total_shots", dev_shots)
-    if total_shots is not None:
-        raise ValueError(
-            f"Device {device.name!r} has finite shots ({total_shots}), but "
-            "shots=None was requested. This device samples, so pass shots= and "
-            "diff_method='parameter-shift'."
-        )
+    if dev_shots is not None:
+        total_shots = getattr(dev_shots, "total_shots", dev_shots)
+        if total_shots is not None:
+            _raise_device_samples(device.name, finite_shots=total_shots)
 
-    # 2. Explicit device attribute flags
-    if (
-        getattr(device, "supports_analytic", None) is False
-        or getattr(device, "analytic", None) is False
-    ):
-        raise ValueError(
-            f"Device {device.name!r} does not support analytic execution, but "
-            "shots=None was requested. This device samples, so pass shots= and "
-            "diff_method='parameter-shift'."
-        )
+    # 2. Probe device preprocessing pipeline
+    cached = getattr(device, "_hqnn_supports_analytic", None)
+    if cached is not None:
+        if not cached:
+            _raise_device_samples(device.name)
+        return
 
-    # 3. Capabilities inspection (legacy dict or DeviceCapabilities)
-    caps_attr = getattr(device, "capabilities", None)
-    if callable(caps_attr):
-        try:
-            legacy_caps = caps_attr()
-            if isinstance(legacy_caps, dict) and not legacy_caps.get(
-                "supports_analytic_computation", True
-            ):
-                raise ValueError(
-                    f"Device {device.name!r} does not support analytic computation, but "
-                    "shots=None was requested. This device samples, so pass shots= and "
-                    "diff_method='parameter-shift'."
-                )
-        except (AttributeError, TypeError, KeyError):
-            logger.debug("Failed to read legacy device capabilities from %s", device)
-    elif caps_attr is not None:
-        meas_procs = getattr(caps_attr, "measurement_processes", {})
-        filter_fn = getattr(caps_attr, "filter", None)
-        if meas_procs and callable(filter_fn):
-            try:
-                analytic_caps = filter_fn(finite_shots=False)
-                analytic_meas = getattr(analytic_caps, "measurement_processes", {})
-                if ("ExpectationMP" in meas_procs or "expval" in meas_procs) and not (
-                    "ExpectationMP" in analytic_meas or "expval" in analytic_meas
-                ):
-                    raise ValueError(
-                        f"Device {device.name!r} does not support analytic expectation values, but "
-                        "shots=None was requested. This device samples, so pass shots= and "
-                        "diff_method='parameter-shift'."
-                    )
-            except (AttributeError, TypeError, KeyError):
-                logger.debug("Failed to filter modern device capabilities from %s", device)
-
-    # 4. Device preprocessing pipeline (no_analytic transform / DeviceError on analytic tape)
     preprocess_fn = getattr(device, "preprocess", None)
-    if callable(preprocess_fn):
-        try:
-            config_cls = getattr(qml.devices, "ExecutionConfig", None)
-            exec_config = config_cls() if config_cls is not None else None
-            pipeline, _ = (
-                device.preprocess(exec_config) if exec_config is not None else device.preprocess()
-            )
-            for transform_op in pipeline:
-                t_fn = getattr(transform_op, "tape_transform", None)
-                if t_fn is None:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", category=DeprecationWarning)
-                        t_fn = getattr(transform_op, "transform", transform_op)
-                t_name = (
-                    getattr(t_fn, "__name__", "")
-                    or getattr(transform_op, "__name__", "")
-                    or str(transform_op)
-                )
-                if "no_analytic" in t_name or "no_analytic" in str(transform_op):
-                    raise ValueError(
-                        f"Device {device.name!r} does not support analytic execution, but "
-                        "shots=None was requested. This device samples, so pass shots= and "
-                        "diff_method='parameter-shift'."
-                    )
-            probe_tape = qml.tape.QuantumScript([], [qml.expval(qml.Z(0))], shots=None)
-            pipeline([probe_tape])
-        except DeviceError as err:
-            err_msg = str(err).lower()
-            if "analytic" in err_msg or "shot" in err_msg:
-                raise ValueError(
-                    f"Device {device.name!r} does not support analytic execution, but "
-                    "shots=None was requested. This device samples, so pass shots= and "
-                    "diff_method='parameter-shift'."
-                ) from err
-        except (AttributeError, TypeError, RuntimeError):
-            logger.debug("Device %s preprocessing probe encountered non-fatal error", device)
+    if not callable(preprocess_fn):
+        return
+
+    try:
+        pipeline, _ = device.preprocess()
+    except Exception:  # noqa: BLE001 - unexpected device errors must not block layer construction
+        return
+
+    tape_analytic = qml.tape.QuantumScript([], [qml.expval(qml.Z(0))], shots=None)
+    try:
+        pipeline([tape_analytic])
+        device._hqnn_supports_analytic = True
+        return
+    except DeviceError:
+        pass
+    except Exception:  # noqa: BLE001 - non-DeviceError means the probe failed for an unrelated reason
+        return
+
+    tape_finite = qml.tape.QuantumScript([], [qml.expval(qml.Z(0))], shots=100)
+    try:
+        pipeline([tape_finite])
+    except Exception:  # noqa: BLE001 - finite shots probe failed; device rejects the probe for other reasons
+        return
+
+    # Analytic fails with DeviceError and finite shots pass: device is sampling-only
+    device._hqnn_supports_analytic = False
+    _raise_device_samples(device.name)
 
 
 def shots_repr(shots: int | None) -> str:
