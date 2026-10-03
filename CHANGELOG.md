@@ -253,6 +253,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native broadcasting, `batch_obs` and `default.qubit`/backprop for every encoder, with a
   correctness check, plus a crossover by qubit count with peak memory; the README now says
   when to train with backprop instead of `lightning.qubit` (#341)
+- A rendered API reference (mkdocs-material + mkdocstrings, one page per public module), built
+  with `mkdocs build --strict` on every PR so a broken cross-reference, or a name in a documented
+  module's `__all__` with no entry, fails CI, and deployed to GitHub Pages from `main` once
+  Pages is enabled; a `docs` dependency group installs the tools (#342)
 
 ### Changed
 - The package metadata links the repository, issue tracker and changelog, and the README's
@@ -355,11 +359,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Forward passes under `torch.no_grad()` skip computing unused adjoint Jacobians in
   quantum encoding layers, cutting evaluation runtime by up to 2.68× (measured on
   lightning.qubit with 8 qubits and batch size 256) (#439)
+- The README shows how a benchmark runs as a Mermaid diagram (matched control, shared per-fold
+  rules, the reading of the Wilcoxon result), and its architecture diagrams are Mermaid
+  instead of ASCII (#451)
 
 ### Fixed
 - Encoding layers raise a construction-time `ValueError` when a resolved device has finite
   shots but `shots=None` was requested, guiding users to pass explicit `shots` and
-  `diff_method="parameter-shift"` (#421)
+  `diff_method="parameter-shift"` (#431)
 - The classifiers applied the `·π` angle scaling to input that bypasses the classical encoder,
   so `PCANormalizer(scale_to_pi=True)` output was scaled twice (#63)
 - `PCANormalizer`: `transform` centred with the batch's mean instead of the training mean (#65);
