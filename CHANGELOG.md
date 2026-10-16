@@ -508,9 +508,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   get an explicit `seed=None` instead of PennyLane's default, which draws from `np.random` (#533)
 - Replace Mermaid diagrams with links to the GitHub repository in the package description at release
   time, so PyPI does not display raw diagram source (#485)
-- `validate_device_shots` detects sampling-only devices from device capabilities and
-  preprocessing (`no_analytic`) rather than relying solely on deprecated device-level shots,
-  raising a construction-time `ValueError` when `shots=None` was requested (#462)
+- `validate_device_shots` also detects sampling-only devices that set no device-level shots,
+  which PennyLane deprecates: it compiles a small probe tape through the device's own
+  preprocessing with and without shots, and raises a construction-time `ValueError` when
+  `shots=None` was requested and only the analytic compile fails (#462)
 - Encoding layers raise a construction-time `ValueError` when a resolved device has finite
   shots but `shots=None` was requested, guiding users to pass explicit `shots` and
   `diff_method="parameter-shift"` (#431)
