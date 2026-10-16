@@ -293,9 +293,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `noise_sweep(..., channel="readout")`, and `readout_error=` on the layers and classifiers for
   training (weight-safe in checkpoints). The map acts on the layer's output: a layer's own
   `readout_error` is suppressed inside `apply_depolarizing_noise` like its other training
-  noise, and `apply_readout_error` refuses a layer without `TrainingNoiseMixin`. On a sampled
-  layer the mean is exact but the shot noise is scaled by `|1 − p01 − p10|`, smaller than that
-  of flipped shots (#486). A model trained with `readout_error` learns its offset, and
+  noise, and `apply_readout_error` refuses a layer without `TrainingNoiseMixin`. A model
+  trained with `readout_error` learns its offset, and
   `predict_proba` runs without it unless called inside `apply_readout_error` (#488) (#358)
 - A model specification page, `docs/rydberg-model.md`, for a simulated Rydberg-atom feature
   map: units, Hamiltonian and its sign and ordering conventions, chain geometry, the detuning
@@ -360,6 +359,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hqnn_forge.diagnostics`; `examples/benchmark_rydberg_features.py` exposes them through
   `--max-separation-rows` and `--separation-seed`, and computes non-interacting arm B once per
   dephasing rate and fold (#519, #520)
+- `examples/benchmark_rydberg_features.py` standardises each head's features per fold, with the
+  mean and standard deviation of the fold's real training rows (never synthetic, validation or
+  test rows), for arms A, B, C and D alike (not `D-hybrid`), so that a score under strong
+  dephasing no longer falls because the features shrink towards ½ while the optimiser keeps its
+  step size; with exact features the collapse then shows through `--shots` and in the
+  `separation` distances, which stay on the features as the map returns them. On by default,
+  recorded as `standardise` in `settings`; `--no-standardise` restores the features as returned
+  and reads the same cache entries (#518, #545)
 
 ### Changed
 - `shot_sweep` evaluates and scores each exact (`shots=None`) reference once, repeating
@@ -498,6 +505,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dataset-selection, and training options (#563)
 
 ### Fixed
+- A readout error `(p01, p10)` on a sampled layer (`shots=`, or inside `apply_shots`) flips
+  each shot, drawn from the device's seeded generator, instead of rescaling the estimate: the
+  output now has the shot noise `(1 − ⟨Z'⟩²)/shots` of a device with that error, where its
+  spread was scaled by `|1 − p01 − p10|`, too small for every ⟨Z⟩ and zero at
+  `p01 + p10 = 1`. Gradients are unchanged in expectation, but a seeded layer's sampled
+  gradients take other values, as the flips now draw from the device's generator before the
+  backward pass; exact layers are unaffected (#486, #546)
 - Pin PyPI diagram links to their release README, replace tilde-fenced Mermaid blocks and blocks
   with whitespace before `mermaid`, and use GitHub-compatible anchors for whitespace, inline links,
   closing `#` sequences and repeated headings (#534)
