@@ -530,10 +530,12 @@ def test_sampling_only_device_without_device_shots_rejection_and_sampled_executi
     kwargs: dict[str, Any],
     in_features: int,
 ) -> None:
-    def fake_resolve(device_name: str, n_qubits: int) -> qml.devices.Device:
+    def fake_resolve(
+        device_name: str, n_qubits: int, *, seed: int | None = None
+    ) -> qml.devices.Device:
         if device_name == "custom.sampling.device":
             return StubSamplingDevice(wires=n_qubits)
-        return resolve_device(device_name, n_qubits)
+        return resolve_device(device_name, n_qubits, seed=seed)
 
     monkeypatch.setattr(f"{module_name}.resolve_device", fake_resolve)
 
@@ -604,10 +606,12 @@ def test_device_rejecting_probe_for_other_reason_still_builds(
 ) -> None:
     """A device rejecting the probe for a reason unrelated to analytic shots still constructs."""
 
-    def fake_resolve(device_name: str, n_qubits: int) -> qml.devices.Device:
+    def fake_resolve(
+        device_name: str, n_qubits: int, *, seed: int | None = None
+    ) -> qml.devices.Device:
         if device_name == "custom.probe_rejecting.device":
             return StubRejectingProbeDevice(wires=n_qubits)
-        return resolve_device(device_name, n_qubits)
+        return resolve_device(device_name, n_qubits, seed=seed)
 
     monkeypatch.setattr("hqnn_forge.encoding.angle_embedding.resolve_device", fake_resolve)
 
