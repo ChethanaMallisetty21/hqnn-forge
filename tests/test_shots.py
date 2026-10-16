@@ -22,7 +22,7 @@ import torch
 from pennylane.exceptions import DeviceError
 
 from hqnn_forge.encoding import AmplitudeEncodingLayer, DataReuploadingLayer, QuantumEncodingLayer
-from hqnn_forge.encoding._common import resolve_device
+from hqnn_forge.encoding._common import resolve_device, validate_device_shots
 from hqnn_forge.encoding.iqp_embedding import IQPEncodingLayer
 from hqnn_forge.models import (
     HybridBinaryClassifier,
@@ -557,8 +557,9 @@ def test_sampling_only_device_without_device_shots_rejection_and_sampled_executi
 
 
 @pytest.mark.requires_lightning
-def test_analytic_device_exposing_capabilities_is_accepted_with_shots_none() -> None:
-    """An analytic device exposing DeviceCapabilities (lightning.qubit) is accepted with shots=None."""
+def test_analytic_plugin_device_is_accepted_with_shots_none() -> None:
+    """An analytic plugin device (lightning.qubit) passes the probe and runs exactly."""
+    torch.manual_seed(0)
     layer = QuantumEncodingLayer(
         n_qubits=2,
         n_layers=1,
@@ -566,9 +567,12 @@ def test_analytic_device_exposing_capabilities_is_accepted_with_shots_none() -> 
         diff_method="adjoint",
         shots=None,
     )
+    exact = QuantumEncodingLayer(n_qubits=2, n_layers=1, **EXACT)
+    exact.load_state_dict(layer.state_dict())
+    assert layer.qlayer.qnode.device.name == "lightning.qubit"
     x = torch.rand(2, 2)
-    out = layer(x)
-    assert out.shape == (2, 2)
+    with torch.no_grad():
+        torch.testing.assert_close(layer(x), exact(x), atol=1e-6, rtol=0)
 
 
 class StubRejectingProbeDevice(qml.devices.Device):
@@ -615,6 +619,7 @@ def test_device_rejecting_probe_for_other_reason_still_builds(
 
     monkeypatch.setattr("hqnn_forge.encoding.angle_embedding.resolve_device", fake_resolve)
 
+    torch.manual_seed(0)
     layer = QuantumEncodingLayer(
         n_qubits=2,
         n_layers=1,
@@ -622,6 +627,67 @@ def test_device_rejecting_probe_for_other_reason_still_builds(
         diff_method="parameter-shift",
         shots=None,
     )
+    exact = QuantumEncodingLayer(n_qubits=2, n_layers=1, **EXACT)
+    exact.load_state_dict(layer.state_dict())
     x = torch.rand(2, 2)
-    out = layer(x)
-    assert out.shape == (2, 2)
+    with torch.no_grad():
+        torch.testing.assert_close(layer(x), exact(x), atol=1e-6, rtol=0)
+
+
+class StubCheckingDevice(qml.devices.Device):
+    """Stub device whose preprocessing runs *check* on every tape, which may raise."""
+
+    def __init__(
+        self, wires: Sequence[Any], check: Callable[[qml.tape.QuantumScript], None]
+    ) -> None:
+        super().__init__(wires=wires, shots=None)
+        self._inner = qml.device("default.qubit", wires=wires)
+        self._check = check
+
+    @property
+    def name(self) -> str:
+        return "custom.checking.device"
+
+    def preprocess(
+        self, execution_config: qml.devices.ExecutionConfig | None = None
+    ) -> tuple[qml.transforms.core.CompilePipeline, qml.devices.ExecutionConfig]:
+        check = self._check
+
+        @qml.transform
+        def run_check(
+            tape: qml.tape.QuantumScript,
+        ) -> tuple[Sequence[qml.tape.QuantumScript], Callable[[Any], Any]]:
+            check(tape)
+            return [tape], lambda res: res[0]
+
+        program, config = self._inner.preprocess(execution_config)
+        program.add_transform(run_check)
+        return program, config
+
+    def execute(self, circuits: Any, execution_config: Any = None) -> Any:
+        return self._inner.execute(circuits, execution_config)
+
+
+def _reject_analytic(tape: qml.tape.QuantumScript) -> None:
+    if not tape.shots:
+        raise ValueError("analytic mode not supported")
+
+
+def _reject_always(tape: qml.tape.QuantumScript) -> None:
+    raise ValueError("unsupported circuit")
+
+
+@pytest.mark.parametrize("wires", [[0, 1], ["a", "b"], [3, 5]])
+def test_sampling_only_device_is_rejected_whatever_the_exception_and_wire_labels(
+    wires: list[Any],
+) -> None:
+    """Only the analytic probe failing marks the device sampling-only, on its own first wire."""
+    device = StubCheckingDevice(wires, _reject_analytic)
+    with pytest.raises(ValueError, match="does not support analytic execution"):
+        validate_device_shots(device, None)
+    validate_device_shots(device, 100)
+
+
+def test_device_rejecting_both_probes_is_not_diagnosed_as_sampling() -> None:
+    """When the finite-shot probe fails too, the failure says nothing about shots."""
+    validate_device_shots(StubCheckingDevice([0, 1], _reject_always), None)

@@ -17,7 +17,7 @@ import inspect
 import logging
 import os
 import warnings
-from typing import Literal, assert_never, get_args
+from typing import Literal, NoReturn, assert_never, get_args
 
 import pennylane as qml
 import torch
@@ -419,7 +419,7 @@ def validate_shots(shots: int | None, diff_method: str) -> None:
         )
 
 
-def _raise_device_samples(device_name: str, *, finite_shots: int | None = None) -> None:
+def _raise_device_samples(device_name: str, *, finite_shots: int | None = None) -> NoReturn:
     reason = (
         f"has finite shots ({finite_shots})"
         if finite_shots is not None
@@ -441,51 +441,41 @@ def validate_device_shots(device: qml.devices.Device, shots: int | None) -> None
     given ``shots=None``, whichever exact method it runs under.  Raising at
     construction with an informative message guides users to pass explicit
     ``shots`` and ``diff_method='parameter-shift'``.
+
+    The device's own preprocessing decides: a small ``expval(Z)`` tape on its
+    first wire is compiled once with ``shots=None`` and once with finite shots.
+    If only the analytic compile fails, the device is sampling-only, whatever
+    the exception type.  If both fail, or the pipeline cannot be built, the
+    probe has nothing to say about shots and the layer is built as before.
     """
     if shots is not None:
         return
 
-    # 1. Device-level shots (while supported in PennyLane)
+    # Device-level shots, while PennyLane still supports them
     dev_shots = getattr(device, "shots", None)
-    if dev_shots is not None:
-        total_shots = getattr(dev_shots, "total_shots", dev_shots)
-        if total_shots is not None:
-            _raise_device_samples(device.name, finite_shots=total_shots)
-
-    # 2. Probe device preprocessing pipeline
-    cached = getattr(device, "_hqnn_supports_analytic", None)
-    if cached is not None:
-        if not cached:
-            _raise_device_samples(device.name)
-        return
-
-    preprocess_fn = getattr(device, "preprocess", None)
-    if not callable(preprocess_fn):
-        return
+    total_shots = getattr(dev_shots, "total_shots", dev_shots)
+    if total_shots is not None:
+        _raise_device_samples(device.name, finite_shots=total_shots)
 
     try:
         pipeline, _ = device.preprocess()
     except Exception:  # noqa: BLE001 - unexpected device errors must not block layer construction
         return
 
-    tape_analytic = qml.tape.QuantumScript([], [qml.expval(qml.Z(0))], shots=None)
-    try:
-        pipeline([tape_analytic])
-        device._hqnn_supports_analytic = True
-        return
-    except DeviceError:
-        pass
-    except Exception:  # noqa: BLE001 - non-DeviceError means the probe failed for an unrelated reason
+    def compiles(probe_shots: int | None) -> bool:
+        wire = device.wires[0] if device.wires else 0
+        tape = qml.tape.QuantumScript([], [qml.expval(qml.Z(wire))], shots=probe_shots)
+        try:
+            pipeline([tape])
+        except Exception:  # noqa: BLE001 - comparing the two probes tells why one failed
+            return False
+        return True
+
+    if compiles(None) or not compiles(100):
+        # Analytic execution works, or the device rejects the probe for another reason
         return
 
-    tape_finite = qml.tape.QuantumScript([], [qml.expval(qml.Z(0))], shots=100)
-    try:
-        pipeline([tape_finite])
-    except Exception:  # noqa: BLE001 - finite shots probe failed; device rejects the probe for other reasons
-        return
-
-    # Analytic fails with DeviceError and finite shots pass: device is sampling-only
-    device._hqnn_supports_analytic = False
+    # The same tape compiles with shots but not without: the device is sampling-only
     _raise_device_samples(device.name)
 
 
