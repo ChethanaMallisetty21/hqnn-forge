@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from typing import Any
 
 import pennylane as qml
@@ -169,6 +171,8 @@ def _reuploading_with_random_scaling(**kwargs) -> DataReuploadingLayer:
     return layer
 
 
+LIGHTNING: dict[str, Any] = {"device_name": "lightning.qubit", "diff_method": "adjoint"}
+
 FORWARD_LAYERS = [
     *ALL_LAYERS,
     pytest.param(
@@ -177,14 +181,22 @@ FORWARD_LAYERS = [
         ),
         id="reuploading-scaled",
     ),
-    # The library defaults: lightning.qubit with adjoint, whose QNodes are
-    # wrapped in a batch-expanding transform the replay must see through.
-    pytest.param(lambda: QuantumEncodingLayer(n_qubits=N_QUBITS), id="angle-lightning"),
-    pytest.param(lambda: IQPEncodingLayer(n_qubits=N_QUBITS), id="iqp-lightning"),
+    # lightning.qubit with adjoint (the default until #349, and what "auto"
+    # picks above 12 qubits), whose QNodes are wrapped in a batch-expanding
+    # transform the replay must see through.
     pytest.param(
-        lambda: AmplitudeEncodingLayer(n_qubits=N_QUBITS, n_features=5), id="amplitude-lightning"
+        lambda: QuantumEncodingLayer(n_qubits=N_QUBITS, **LIGHTNING), id="angle-lightning"
     ),
-    pytest.param(lambda: _reuploading_with_random_scaling(), id="reuploading-lightning"),
+    pytest.param(lambda: IQPEncodingLayer(n_qubits=N_QUBITS, **LIGHTNING), id="iqp-lightning"),
+    pytest.param(
+        lambda: AmplitudeEncodingLayer(n_qubits=N_QUBITS, n_features=5, **LIGHTNING),
+        id="amplitude-lightning",
+    ),
+    pytest.param(
+        lambda: _reuploading_with_random_scaling(**LIGHTNING), id="reuploading-lightning"
+    ),
+    # The library default, "auto": default.qubit with backprop at this size.
+    pytest.param(lambda: QuantumEncodingLayer(n_qubits=N_QUBITS), id="angle-auto"),
 ]
 
 
@@ -1085,3 +1097,31 @@ class TestNoisyKernel:
     def test_density_kernel_shape_checks(self) -> None:
         with pytest.raises(ValueError, match="stacks of equal square matrices"):
             kernels.kernel_from_density_matrices(torch.zeros(2, 4, 4), torch.zeros(2, 2, 2))
+
+
+class TestGlobalNumpyRng:
+    """The analytic simulators leave NumPy's global RNG alone (#417)."""
+
+    @pytest.mark.parametrize(
+        "compute",
+        [
+            pytest.param(lambda X, layer: kernels.encoded_states(X, layer), id="states"),
+            pytest.param(lambda X, layer: quantum_kernel_matrix(X, layer), id="kernel"),
+            pytest.param(
+                lambda X, layer: kernels.encoded_density_matrices(X, layer, noise_level=0.05),
+                id="density-noisy",
+            ),
+            pytest.param(
+                lambda X, layer: kernels.encoded_density_matrices(X, layer, noise_level=0.0),
+                id="density-exact",
+            ),
+        ],
+    )
+    def test_left_exactly_as_it_was(
+        self,
+        compute: Callable[[torch.Tensor, DataReuploadingLayer], torch.Tensor],
+        numpy_rng_untouched: Callable[[], AbstractContextManager[None]],
+    ) -> None:
+        layer, X = _reuploading(), _angles(3)
+        with numpy_rng_untouched():
+            compute(X, layer)

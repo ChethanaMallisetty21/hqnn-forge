@@ -24,6 +24,7 @@ import torch
 from pennylane.exceptions import AllocationError, DeviceError
 
 from hqnn_forge.circuits import hardware_efficient_layer, strongly_entangling_layer
+from hqnn_forge.utils.rng import as_seed
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Type aliases
 # ---------------------------------------------------------------------------
 RotationAxis = Literal["X", "Y", "Z"]
-DiffMethod = Literal["adjoint", "parameter-shift", "backprop", "finite-diff"]
+DiffMethod = Literal["auto", "adjoint", "parameter-shift", "backprop", "finite-diff"]
 #: The simulators the fallback chain knows.  Any other PennyLane device name
 #: (a plugin such as ``"qiskit.aer"``, or hardware) is accepted too, and
 #: constructed exactly as given: see :func:`resolve_device`.
@@ -40,6 +41,11 @@ KnownDevice = Literal["lightning.gpu", "lightning.kokkos", "lightning.qubit", "d
 #: backend is unavailable (``default.qubit``, the chain's end, has nowhere to
 #: fall back to).  Every other name is constructed as given.
 KNOWN_DEVICES: tuple[str, ...] = get_args(KnownDevice)
+#: Devices :func:`resolve_device` passes an explicit ``seed=None`` when
+#: unseeded.  Omitting ``seed`` leaves PennyLane's ``"global"`` default, which
+#: draws a seed from ``np.random`` even for analytic circuits (#417); these
+#: devices accept ``None`` and create a private, entropy-seeded generator.
+_SEED_NONE_DEVICES: frozenset[str] = frozenset({*KNOWN_DEVICES, "default.mixed"})
 #: A PennyLane device name: one of :data:`KNOWN_DEVICES`, or any other.
 DeviceName = str
 Entangler = Literal["ring", "strongly_entangling", "brickwork", "hardware_efficient"]
@@ -49,6 +55,82 @@ Readout = Literal["all", "first"]
 #: subset of the previous one's requirements: ``lightning.qubit`` needs only
 #: the ``pennylane-lightning`` wheel, ``default.qubit`` ships with PennyLane.
 FALLBACK_CHAIN: tuple[str, ...] = ("lightning.qubit", "default.qubit")
+
+#: Largest circuit ``device_name="auto"`` simulates on ``default.qubit`` with
+#: backprop; larger ones go to ``lightning.qubit`` with adjoint.  Measured for
+#: one training step at batch 64 (``examples/benchmark_batching.py
+#: --crossover``, README): backprop is 12x faster at 8 qubits and still 2.6x
+#: at 12, while at 14 the two are about as fast and backprop's memory, which
+#: grows fourfold per two qubits, has passed 1 GB against lightning's 21 MB.  At 13
+#: backprop was still faster (0.5 s against 0.9 s) but took +526 MB against
+#: +18 MB, so the switch comes one qubit early, to bound memory rather than to
+#: win the last bit of speed.  Only batch 64 was measured: backprop's memory
+#: also grows with the batch (scaled linearly, the +283 MB at 12 qubits would
+#: be about 4.5 GB at batch 1024; not measured), so for large batches near the
+#: threshold pass ``device_name="lightning.qubit"`` explicitly.  The same holds
+#: for inference: ``predict_proba`` and the trainer's validation pass their
+#: whole input as one batch, so at 12 qubits a 57k-row split holds a
+#: (57k, 4096) complex state, about 3.7 GB per copy, until they evaluate in
+#: chunks (#469).
+AUTO_BACKPROP_MAX_QUBITS = 12
+
+
+def resolve_backend(
+    device_name: DeviceName,
+    diff_method: DiffMethod,
+    n_qubits: int,
+    *,
+    shots: int | None = None,
+    require_backprop: bool = False,
+) -> tuple[DeviceName, DiffMethod]:
+    """
+    Resolve ``"auto"`` in ``device_name`` and ``diff_method`` to concrete names.
+
+    Anything other than ``"auto"`` is returned unchanged.  The rules:
+
+    * **Device.**  With ``require_backprop``, or an explicit
+      ``diff_method="backprop"``, ``"default.qubit"``: backprop needs it.  With
+      an explicit ``"adjoint"``, ``"lightning.qubit"``, whose adjoint is the
+      fast one.  Otherwise by size: ``"default.qubit"`` up to
+      :data:`AUTO_BACKPROP_MAX_QUBITS` qubits, ``"lightning.qubit"`` above.
+    * **Method.**  With ``shots``, ``"parameter-shift"``: the state-vector
+      methods cannot run on samples (see ``validate_shots``).  Otherwise by
+      the device: ``"backprop"`` on ``default.qubit`` and ``default.mixed``,
+      which vectorise a batch; ``"adjoint"`` on the three lightning
+      simulators in :data:`KNOWN_DEVICES`; ``"parameter-shift"`` on any other
+      device (``lightning.tensor`` included, which has no adjoint), the method
+      every device and hardware supports.
+
+    The rules look at names only.  If ``"lightning.qubit"`` is chosen but not
+    installed, :func:`resolve_device` still falls back to ``default.qubit``
+    with its warning, and the method stays ``"adjoint"``, which
+    ``default.qubit`` also supports.
+
+    ``require_backprop`` is for amplitude encoding behind a classical encoder,
+    which trains through the circuit's input gradient: only backprop gives it
+    correctly (see ``hqnn_forge.encoding.amplitude_embedding``).  It only steers
+    ``"auto"``; an explicit conflicting choice is the caller's to refuse.
+    """
+    if device_name == "auto":
+        if require_backprop or diff_method == "backprop":
+            device_name = "default.qubit"
+        elif diff_method == "adjoint":
+            device_name = "lightning.qubit"
+        else:
+            device_name = (
+                "default.qubit" if n_qubits <= AUTO_BACKPROP_MAX_QUBITS else "lightning.qubit"
+            )
+    if diff_method == "auto":
+        if shots is not None:
+            diff_method = "parameter-shift"
+        elif device_name in ("default.qubit", "default.mixed"):
+            diff_method = "backprop"
+        elif device_name in KNOWN_DEVICES:
+            diff_method = "adjoint"
+        else:
+            diff_method = "parameter-shift"
+    return device_name, diff_method
+
 
 #: What creating a device raises when its plugin or hardware is missing:
 #: ``DeviceError`` for a device name no installed plugin registers,
@@ -356,9 +438,9 @@ def validate_device_shots(device: qml.devices.Device, shots: int | None) -> None
 
     A real sampling device (hardware, ``"qiskit.remote"``, sampling plugins, ...)
     cannot return exact expectation values and fails at the first forward pass when
-    given ``shots=None``, typically with the default ``diff_method="adjoint"``.
-    Raising at construction with an informative message guides users to pass
-    explicit ``shots`` and ``diff_method='parameter-shift'``.
+    given ``shots=None``, whichever exact method it runs under.  Raising at
+    construction with an informative message guides users to pass explicit
+    ``shots`` and ``diff_method='parameter-shift'``.
     """
     if shots is not None:
         return
@@ -407,12 +489,43 @@ def validate_device_shots(device: qml.devices.Device, shots: int | None) -> None
     _raise_device_samples(device.name)
 
 
-def shots_repr(shots: int | None) -> str:
-    """The ``extra_repr`` fragment for a finite shot count; empty for exact values."""
-    return "" if shots is None else f", shots={shots}"
+def shots_repr(shots: int | None, seed: int | None = None) -> str:
+    """The ``extra_repr`` fragment for a shot count and device seed; empty for neither."""
+    return ("" if shots is None else f", shots={shots}") + (
+        "" if seed is None else f", seed={seed}"
+    )
 
 
-def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device:
+def validate_seed(seed: int | None) -> int | None:
+    """
+    ``seed`` as a plain ``int`` (or ``None``), for a device's ``seed`` argument.
+
+    NumPy integers are accepted and converted, as for ``init_seed`` (see
+    :func:`~hqnn_forge.utils.rng.as_seed`, which raises ``TypeError`` for
+    any other type, ``bool`` included).  NumPy's generators, which
+    PennyLane's simulators use, take no negative seed, so a negative one
+    raises ``ValueError``.
+    """
+    seed = as_seed(seed, "seed")
+    if seed is not None and seed < 0:
+        raise ValueError(f"seed must be None or a non-negative int; got {seed!r}.")
+    return seed
+
+
+def backend_repr(qlayer: qml.qnn.TorchLayer) -> str:
+    """
+    The ``extra_repr`` fragment naming the device and method the QNode runs on.
+
+    These are the names after ``"auto"`` and the fallback chain are resolved,
+    which ``get_config`` does not record (it keeps ``"auto"``).
+    """
+    qnode = qlayer.qnode
+    return f", device={qnode.device.name!r}, diff_method={qnode.diff_method!r}"
+
+
+def resolve_device(
+    device_name: DeviceName, n_qubits: int, *, seed: int | None = None
+) -> qml.devices.Device:
     """
     Create *device_name*, falling back along :data:`FALLBACK_CHAIN` when a
     backend is not installed or has no usable hardware.
@@ -442,6 +555,15 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
         the README for their prerequisites.
     n_qubits:
         Number of qubits to allocate.
+    seed:
+        Seed of the device's own random generator, which draws the shot
+        samples.  ``None`` creates an unseeded private generator, without
+        drawing from NumPy's global RNG.  Neither ``torch.manual_seed`` nor
+        ``numpy.random.seed`` controls it: pass ``seed`` for repeatable
+        shot-based results.  ``default.qubit``,
+        ``default.mixed`` and the lightning devices honour it.  Other plugins
+        receive an explicit seed as given, while ``None`` leaves their default
+        unchanged (they need not accept a ``seed`` keyword).  See ``validate_seed``.
 
     Returns
     -------
@@ -467,8 +589,13 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
         ``default.qubit`` has no dependencies, so the latter means PennyLane
         itself is broken.
     """
+    seed = validate_seed(seed)
+    kwargs: dict[str, object] = {"seed": seed}
+    if seed is None and device_name not in _SEED_NONE_DEVICES:
+        # A plugin need not accept a seed keyword: leave its default alone.
+        kwargs = {}
     if device_name not in KNOWN_DEVICES:
-        dev = qml.device(device_name, wires=n_qubits)
+        dev = qml.device(device_name, wires=n_qubits, **kwargs)
         logger.debug("Quantum device initialised: %s (%d qubits)", device_name, n_qubits)
         return dev
     start = FALLBACK_CHAIN.index(device_name) + 1 if device_name in FALLBACK_CHAIN else 0
@@ -480,7 +607,7 @@ def resolve_device(device_name: DeviceName, n_qubits: int) -> qml.devices.Device
             logger.debug("Skipping %s, which failed before: %r", name, _FAILED_BACKENDS[name])
             continue
         try:
-            dev = qml.device(name, wires=n_qubits)
+            dev = qml.device(name, wires=n_qubits, **kwargs)
         except DEVICE_FAILURES as exc:
             if attempt == last or is_out_of_memory(exc):
                 raise

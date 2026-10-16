@@ -9,7 +9,7 @@ conventions the rest of the library relies on. Each section covers:
 - what else has to change alongside it.
 
 The workflow itself (issue first, branch naming, commit style, PR checklist) is in
-[`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md).
+[`CONTRIBUTING.md`](https://github.com/hqnn-forge/hqnn-forge/blob/main/CONTRIBUTING.md).
 
 ---
 
@@ -113,21 +113,32 @@ contract is spelled out in `hqnn_forge/_encoding_contract.py`:
   validation (call `check_inputs(x, self.n_features, name="n_features")` from
   `hqnn_forge.encoding._common`, which rejects the wrong width and NaN/inf) and any transform. `forward(x)`
   must be exactly `self._run_circuit(self.prepare_inputs(x))`, which is
-  `self.qlayer(self.prepare_inputs(x))` but for training-time noise (below). The kernels (`hqnn_forge.kernels`)
+  `self.qlayer(self.prepare_inputs(x))` but for noise (below). The kernels (`hqnn_forge.kernels`)
   replay the circuit on `prepare_inputs(X)`, so a step done inline in `forward` is silently
   skipped there, and the kernel describes a different feature map without raising.
 
-The one allowed exception is training-time noise. A layer built with `noise_level > 0` runs a
-noisy circuit in `train()` mode. Inherit `TrainingNoiseMixin` from `hqnn_forge.noise`, take
-`noise_level`, `noise_position`, `noise_method` and `noise_trajectories` in the constructor, call
-`self._init_training_noise(...)` once the QNode exists, run the circuit through
-`self._run_circuit`, and append `self._noise_repr()` to `extra_repr`, as every encoding layer
-does.
+The one allowed exception is noise. A layer built with `noise_level > 0` runs a noisy circuit in
+`train()` mode, and one built with `readout_error=(p01, p10)` passes the circuit's output
+through that readout error in `train()` mode; an open `apply_readout_error` block does the
+same in either mode. Inherit `TrainingNoiseMixin` from `hqnn_forge.noise`, take `noise_level`,
+`noise_position`, `noise_method`, `noise_trajectories`, `noise_channel` and `readout_error` in
+the constructor, call `self._init_training_noise(...)` once the QNode exists, run the circuit
+through `self._run_circuit`, and append `self._noise_repr()` to `extra_repr`, as every encoding
+layer does. The readout error is applied in `_run_circuit`, on the output: a layer without the
+mixin is refused by `apply_readout_error` (and by `noise_sweep(..., channel="readout")`), a
+`forward` that calls `self.qlayer` directly would skip it without any error, and the kernels,
+which replay `qlayer(prepare_inputs(x))`, do not see it.
 
 Beyond the protocol:
 
 - **Build the QNode through the shared helpers** in `hqnn_forge/encoding/_common.py`:
-  - `resolve_device(device_name, n_qubits)` provides the fallback chain to `default.qubit`.
+  - `resolve_backend(device_name, diff_method, n_qubits, shots=shots)` turns the default
+    `"auto"` into concrete names; call it first, since `"auto"` is not a PennyLane device.
+  - `resolve_device(device_name, n_qubits, seed=seed)` provides the fallback chain to
+    `default.qubit` and seeds the device's shot sampling. Take a `seed=None` argument, pass it
+    through, set `self.seed = validate_seed(seed)`, and show it with
+    `shots_repr(self.shots, self.seed)` in `extra_repr`, as the built-in layers do; without it a
+    shot-based model built with `seed=` silently does not repeat.
   - `expand_batch_dimension(qnode, diff_method)` makes a batched `inputs` work under adjoint.
   - `apply_variational_layers` and `measure_z` provide the ansatz and the readout.
   - `validate_circuit_options` rejects a bad option at construction, not at the first forward.

@@ -64,16 +64,19 @@ from hqnn_forge.encoding._common import (
     Readout,
     RotationAxis,
     apply_variational_layers,
+    backend_repr,
     check_inputs,
     expand_batch_dimension,
     is_out_of_memory,
     measure_z,
     readout_wires,
     reset_device_fallback,
+    resolve_backend,
     resolve_device,
     shots_repr,
     validate_circuit_options,
     validate_device_shots,
+    validate_seed,
     validate_shots,
     variational_weight_shape,
 )
@@ -286,11 +289,12 @@ def build_encoding_qnode(
     n_qubits: int = 8,
     n_layers: int = 2,
     rotation: RotationAxis = "X",
-    device_name: DeviceName = "lightning.qubit",
-    diff_method: DiffMethod = "adjoint",
+    device_name: DeviceName = "auto",
+    diff_method: DiffMethod = "auto",
     entangler: Entangler = "ring",
     readout: Readout = "all",
     shots: int | None = None,
+    seed: int | None = None,
 ) -> qml.QNode:
     """
     Build and return a PennyLane QNode for the angle-embedding feature map.
@@ -311,15 +315,20 @@ def build_encoding_qnode(
         ``"Z"`` raises: a single ``RZ`` on ``|0⟩`` is only a phase, so the
         layer would not depend on its inputs.
     device_name:
-        PennyLane device string.  ``"lightning.qubit"`` is strongly preferred for
-        adjoint differentiation.  An unavailable simulator falls back along
-        ``lightning.qubit → default.qubit`` with a warning per step; any name
-        outside :data:`~hqnn_forge.encoding.angle_embedding.KNOWN_DEVICES` (a plugin
-        or hardware) is constructed as given.
+        PennyLane device name.  Default ``"auto"``: ``default.qubit`` up to
+        12 qubits, ``lightning.qubit`` above (see
+        :func:`~hqnn_forge.encoding.resolve_backend`).  The simulators in
+        :data:`~hqnn_forge.encoding.angle_embedding.KNOWN_DEVICES` fall back along
+        ``lightning.qubit → default.qubit`` with a warning per step when
+        unavailable; any other name (a plugin or hardware) is constructed as
+        given, and PennyLane's error surfaces if it cannot be.  Hardware
+        needs ``shots`` and ``diff_method="parameter-shift"``.
     diff_method:
         Differentiation strategy:
 
-        - ``"adjoint"``         — exact, O(p) memory; requires lightning device.
+        - ``"auto"``            — the default; chosen by device, see
+          :func:`~hqnn_forge.encoding.resolve_backend`.
+        - ``"adjoint"``         — exact, O(p) memory; fastest on lightning.
         - ``"parameter-shift"`` — exact, hardware-compatible, O(p) circuit evals.
         - ``"backprop"``        — auto-diff through simulator; requires default.qubit.
         - ``"finite-diff"``     — approximate; avoid for training.
@@ -328,6 +337,9 @@ def build_encoding_qnode(
         ``"hardware_efficient"``; see :func:`apply_variational_layers`.
     readout:
         ``"all"`` (default): ⟨Z_i⟩ on every qubit.  ``"first"``: ⟨Z_0⟩ only.
+    shots, seed:
+        Finite-shot sampling and the device seed, as for
+        :class:`QuantumEncodingLayer`.
 
     Returns
     -------
@@ -366,8 +378,9 @@ def build_encoding_qnode(
             'DataReuploadingLayer(rotation="Z", n_layers >= 2).'
         )
 
+    device_name, diff_method = resolve_backend(device_name, diff_method, n_qubits, shots=shots)
     validate_shots(shots, diff_method)
-    device = resolve_device(device_name, n_qubits)
+    device = resolve_device(device_name, n_qubits, seed=seed)
     validate_device_shots(device, shots)
     circuit_fn = _make_angle_embedding_circuit(n_qubits, n_layers, rotation, entangler, readout)
 
@@ -440,15 +453,19 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         Pauli axis for AngleEmbedding: ``"X"`` | ``"Y"``; ``"Z"`` raises, see
         :func:`build_encoding_qnode`.
     device_name:
-        PennyLane device name.  The simulators in
+        PennyLane device name.  Default ``"auto"``: ``default.qubit`` up to
+        12 qubits, ``lightning.qubit`` above (see
+        :func:`~hqnn_forge.encoding.resolve_backend`).  The simulators in
         :data:`~hqnn_forge.encoding.angle_embedding.KNOWN_DEVICES` fall back along
         ``lightning.qubit → default.qubit`` with a warning per step when
         unavailable; any other name (a plugin or hardware) is constructed as
         given, and PennyLane's error surfaces if it cannot be.  Hardware
         needs ``shots`` and ``diff_method="parameter-shift"``.
     diff_method:
-        Gradient method.  Use ``"adjoint"`` with ``lightning.qubit`` for
-        exact, efficient gradients during state-vector simulation.
+        ``"auto"`` (default) picks by device: ``"backprop"`` on
+        ``default.qubit``, ``"adjoint"`` on lightning, ``"parameter-shift"``
+        with ``shots`` or on any other device.  Or one of ``"adjoint"``,
+        ``"parameter-shift"``, ``"backprop"``, ``"finite-diff"``.
     entangler:
         ``"ring"`` (default), ``"strongly_entangling"``, ``"brickwork"`` (the
         same parameter count) or ``"hardware_efficient"`` (a third of it: one
@@ -464,7 +481,8 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         With ``noise_level > 0`` the train-mode forward pass runs the circuit
         on ``default.mixed`` with that channel inserted, so gradients are
         computed through the noisy circuit (noise-aware training); eval mode
-        is always noiseless, like dropout.  With the
+        is noiseless, like dropout, outside the blocks of
+        :mod:`hqnn_forge.noise`.  With the
         default ``noise_method``, backprop keeps a ``batch × 4^n`` density
         matrix per operation, so this is practical up to about 6 qubits.  See
         :mod:`hqnn_forge.noise`.
@@ -479,21 +497,50 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         average.  See :mod:`hqnn_forge.noise`.
     noise_trajectories:
         Draws averaged per sample with ``noise_method="trajectories"``.
-        Default 1; must be 1 for ``"density"``.
+        Default 1; must be 1 for ``"density"``.  Use 8 or more at noise of a
+        few percent per gate: with fewer draws some runs on the breast-cancer
+        proxy had not started to train within 30 epochs (#347, #480; see
+        :mod:`hqnn_forge.noise`).
     noise_channel:
         The channel ``noise_level`` is the strength of: ``"depolarizing"``
         (default), ``"amplitude_damping"`` (T1), ``"phase_damping"`` (T2),
         ``"bit_flip"`` (also a symmetric readout error at ``"end"``) or
-        ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  The trajectory method
-        samples the Pauli ones only (depolarizing, bit flip, phase flip).
+        ``"phase_flip"``; see :mod:`hqnn_forge.noise`.  With
+        ``noise_method="trajectories"``, amplitude damping needs
+        ``diff_method="backprop"``, ``"parameter-shift"`` or ``"finite-diff"``,
+        ``default.qubit`` or ``lightning.qubit``, and no ``shots``.
     shots:
         ``None`` (default): exact expectation values.  An ``int``: every
         readout is estimated from that many samples, as on hardware.  Needs
         ``diff_method="parameter-shift"``; with training noise, only
         ``noise_method="trajectories"``.  The samples come from the device's
-        own generator, which ``torch.manual_seed`` does not reach (#354).
-        The ``shots`` attribute reads the QNode the layer runs, so it follows
+        own generator, which neither ``torch.manual_seed`` nor
+        ``numpy.random.seed`` reaches: pass ``seed`` for samples that repeat
+        run to run.  The ``shots`` attribute
+        reads the QNode the layer runs, so it follows
         :func:`hqnn_forge.noise.apply_shots`.
+    seed:
+        Seed of the device's generator, which draws the shot samples; a
+        non-negative ``int`` (NumPy integers are converted) or ``None``
+        (default: unseeded).  Inert for exact simulation.  Shown in the repr;
+        see :func:`~hqnn_forge.encoding.angle_embedding.resolve_device`.
+    readout_error:
+        ``None`` (default) or a pair ``(p01, p10)``, each in ``[0, 1]``: in
+        **train mode** each measured bit reads 1 instead of 0 with
+        probability ``p01`` and 0 instead of 1 with ``p10``, which maps every
+        output to ``(1 − p01 − p10) ⟨Z⟩ + (p10 − p01)``
+        (:func:`hqnn_forge.noise.readout_error_map`).  Independent of
+        ``noise_level``, and applied after its channel.  Eval mode has none;
+        evaluate under one with :func:`hqnn_forge.noise.apply_readout_error`.
+        Not applied inside an :func:`~hqnn_forge.noise.apply_depolarizing_noise`
+        block, like the rest of the training noise.  The head learns the
+        offset ``p10 − p01``, so a model trained with it is evaluated on
+        outputs without that shift unless the evaluation runs inside
+        ``apply_readout_error`` with the same pair (#488).  With ``shots``
+        the map rescales the sampled estimate: the mean is exact, but the
+        shot noise is scaled by ``|1 − p01 − p10|`` and so comes out smaller
+        than that of flipped shots (#486).  Stored as plain floats; shown in
+        the repr.
 
     Attributes
     ----------
@@ -510,6 +557,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
     noise_position : str
     noise_method : str
     noise_trajectories : int
+    readout_error : tuple[float, float] or None
     qlayer : pennylane.qnn.TorchLayer
         The underlying differentiable quantum layer.
 
@@ -533,8 +581,8 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         n_qubits: int = 8,
         n_layers: int = 2,
         rotation: RotationAxis = "X",
-        device_name: DeviceName = "lightning.qubit",
-        diff_method: DiffMethod = "adjoint",
+        device_name: DeviceName = "auto",
+        diff_method: DiffMethod = "auto",
         entangler: Entangler = "ring",
         readout: Readout = "all",
         noise_level: float = 0.0,
@@ -543,6 +591,8 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
         noise_trajectories: int = 1,
         shots: int | None = None,
         noise_channel: Channel = "depolarizing",
+        seed: int | None = None,
+        readout_error: tuple[float, float] | None = None,
     ) -> None:
         super().__init__()
 
@@ -563,6 +613,7 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             entangler=entangler,
             readout=readout,
             shots=shots,
+            seed=seed,
         )
 
         # Declare the trainable weight tensor shape for TorchLayer ─────────
@@ -588,7 +639,9 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             noise_trajectories,
             shots=shots,
             noise_channel=noise_channel,
+            readout_error=readout_error,
         )
+        self.seed = validate_seed(seed)
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -652,7 +705,9 @@ class QuantumEncodingLayer(TrainingNoiseMixin, nn.Module):
             options += f", entangler={self.entangler!r}"
         if self.readout != "all":
             options += f", readout={self.readout!r}"
-        options += self._noise_repr() + shots_repr(self.shots)
+        options += (
+            self._noise_repr() + shots_repr(self.shots, self.seed) + backend_repr(self.qlayer)
+        )
         return (
             f"n_qubits={self.n_qubits}, "
             f"n_layers={self.n_layers}, "

@@ -18,6 +18,7 @@ from hqnn_forge.encoding.angle_embedding import DeviceName, DiffMethod
 from hqnn_forge.models import (
     ClassicalBaseline,
     HybridBinaryClassifier,
+    LinearClassifier,
     MulticlassHybridClassifier,
     ParallelHybridClassifier,
 )
@@ -421,6 +422,8 @@ class TestFailures:
             "noise_trajectories",
             "shots",
             "noise_channel",
+            "seed",
+            "readout_error",
         }
 
     def test_dropout_override_needs_no_opt_in_and_keeps_the_weights(self, saved: tuple) -> None:
@@ -673,6 +676,8 @@ CONSTRUCTOR_ARGS = {
         "trainable_input_scaling",
         "shots",
         "noise_channel",
+        "seed",
+        "readout_error",
     },
     ParallelHybridClassifier: {
         "n_input_features",
@@ -699,6 +704,8 @@ CONSTRUCTOR_ARGS = {
         "trainable_input_scaling",
         "shots",
         "noise_channel",
+        "seed",
+        "readout_error",
     },
     MulticlassHybridClassifier: {
         "n_input_features",
@@ -727,6 +734,8 @@ CONSTRUCTOR_ARGS = {
         "trainable_input_scaling",
         "shots",
         "noise_channel",
+        "seed",
+        "readout_error",
     },
     ClassicalBaseline: {
         "n_input_features",
@@ -735,11 +744,12 @@ CONSTRUCTOR_ARGS = {
         "dropout_p",
         "init_seed",
     },
+    LinearClassifier: {"n_input_features", "init_seed"},
 }
 
 #: The arguments each class had when checkpoints of it were first written: the
 #: binary classifiers at #120 (31c9879), the multiclass one at #156 (11936cf),
-#: ClassicalBaseline at #250.
+#: ClassicalBaseline at #250, LinearClassifier at #501.
 FIRST_CHECKPOINTED_ARGS = {
     HybridBinaryClassifier: {
         "n_input_features",
@@ -785,6 +795,7 @@ FIRST_CHECKPOINTED_ARGS = {
         "dropout_p",
         "init_seed",
     },
+    LinearClassifier: {"n_input_features", "init_seed"},
 }
 
 

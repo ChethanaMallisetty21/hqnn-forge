@@ -1,8 +1,8 @@
-<h1><img src="https://raw.githubusercontent.com/g8rdier/hqnn-forge/main/assets/social-preview.png" alt="hqnn-forge" width="640"></h1>
+<h1><img src="https://raw.githubusercontent.com/hqnn-forge/hqnn-forge/main/assets/social-preview.png" alt="hqnn-forge" width="640"></h1>
 
-[![Tests](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/g8rdier/hqnn-forge/actions/workflows/tests.yml)
-[![License](https://img.shields.io/github/license/g8rdier/hqnn-forge)](https://github.com/g8rdier/hqnn-forge/blob/main/LICENSE)
-[![Docs](https://github.com/g8rdier/hqnn-forge/actions/workflows/docs.yml/badge.svg)](https://g8rdier.github.io/hqnn-forge/)
+[![Tests](https://github.com/hqnn-forge/hqnn-forge/actions/workflows/tests.yml/badge.svg)](https://github.com/hqnn-forge/hqnn-forge/actions/workflows/tests.yml)
+[![License](https://img.shields.io/github/license/hqnn-forge/hqnn-forge)](https://github.com/hqnn-forge/hqnn-forge/blob/main/LICENSE)
+[![Docs](https://github.com/hqnn-forge/hqnn-forge/actions/workflows/docs.yml/badge.svg)](https://hqnn-forge.github.io/hqnn-forge/)
 
 > **Test whether a small quantum layer earns its parameters on imbalanced binary tabular data.**
 
@@ -16,10 +16,14 @@ layer, and circuit diagnostics.
 
 **Scope.** Binary classification on imbalanced tabular data, or data made tabular by a
 pretrained embedding (see
-[Non-tabular data](https://github.com/g8rdier/hqnn-forge#non-tabular-data-precomputed-embeddings)).
+[Non-tabular data](https://github.com/hqnn-forge/hqnn-forge#non-tabular-data-precomputed-embeddings)).
 The estimator, losses, thresholds and metrics are built for binary targets;
 `MulticlassHybridClassifier` covers multiclass targets at the model level only. End-to-end
 image, text or time-series pipelines are out of scope.
+
+**Documentation.** The API reference, rendered from the docstrings, is at
+**<https://hqnn-forge.github.io/hqnn-forge/>**, together with the
+[methodology](https://hqnn-forge.github.io/hqnn-forge/methodology/) the comparisons follow.
 
 ---
 
@@ -74,7 +78,7 @@ across datasets.
 | Feature | Detail |
 |---|---|
 | **Small-angle init** | Gaussian initialisation: global σ = π/√(n·L), or a per-layer schedule σ_ℓ = π/√(n·(L+ℓ)) that starts at the global σ and narrows by up to √2 towards the last layer (this library's own heuristics, in the spirit of Zhang et al. 2022). Measured with `hqnn_forge.diagnostics.gradient_variance` on a 2-layer circuit with a ⟨Z_0⟩ cost: no gain over uniform init for inputs spread over (−π, π), which is what both classifiers feed the circuit, and a gain growing from 1.1x to 1.75x between 4 and 8 qubits only near zero input. Over (−π, π) the variance falls ~3x per two qubits under either init — see the module docstring |
-| **Adjoint differentiation** | Exact gradients via `lightning.qubit` — no finite-difference approximation |
+| **Automatic backend choice** | `device_name="auto"` (the default) trains on `default.qubit` with backprop up to 12 qubits and on `lightning.qubit` with exact adjoint gradients above; see *Which to train with* |
 | **Custom angle encoding** | Angle-embedding feature map (8 qubits by default) with a CNOT-ring VQC ansatz; strongly-entangling, brickwork and hardware-efficient (CZ + RY) entanglers are options |
 | **Imbalance-robust losses** | Focal Loss & inverse-frequency weighted BCE |
 | **Pure-NumPy pre-processing** | PCA + standardisation without scikit-learn runtime dependency |
@@ -97,13 +101,13 @@ The extras add optional parts; combine them as needed, e.g. `".[lightning,sklear
 
 | Extra | Installs | Needed for |
 |---|---|---|
-| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, the library defaults |
+| `lightning` | `pennylane-lightning` | the `lightning.qubit` backend and adjoint differentiation, which the default `"auto"` picks above 12 qubits |
 | `sklearn` | `scikit-learn` | the scikit-learn estimator in `hqnn_forge.sklearn` |
 | `examples` | `scikit-learn`, `matplotlib` | the scripts in `examples/` and the plots in `hqnn_forge.evaluation` |
-| `dev` | test and lint tools | development; see [Development Setup](https://github.com/g8rdier/hqnn-forge#development-setup) |
+| `dev` | test and lint tools | development; see [Development Setup](https://github.com/hqnn-forge/hqnn-forge#development-setup) |
 
 pip installs the newest versions that `pyproject.toml` allows. To work on the project in the
-environment CI tests against, use the uv setup under [Development Setup](https://github.com/g8rdier/hqnn-forge#development-setup).
+environment CI tests against, use the uv setup under [Development Setup](https://github.com/hqnn-forge/hqnn-forge#development-setup).
 
 ### Device backends
 
@@ -117,8 +121,9 @@ of falling back.
 `shots=N` (default `None`, exact) samples every readout from `N` measurements, as hardware
 does, and needs `diff_method="parameter-shift"`; hardware devices need both.
 `hqnn_forge.noise.apply_shots` evaluates an exactly trained model under sampling, and
-`shot_sweep` repeats that across shot counts. Sampling is not yet seeded by
-`torch.manual_seed` (#354).
+`shot_sweep` repeats that across shot counts. The samples come from the device's own
+generator, which `torch.manual_seed` does not reach; pass `seed=` to the model or layer for
+shot-based runs that repeat.
 
 | `device_name` | What it is | Prerequisites |
 |---|---|---|
@@ -130,9 +135,9 @@ does, and needs `diff_method="parameter-shift"`; hardware devices need both.
 The GPU backends pay off at larger qubit counts or batch sizes. Both accelerated devices support
 the same `diff_method="adjoint"` as `lightning.qubit`.
 
-**Which to train with.** `lightning.qubit` with adjoint, the default, runs a batch one sample
-at a time; `default.qubit` with `diff_method="backprop"` vectorises it. Measured for one
-training step at batch 64 (`examples/benchmark_batching.py --crossover`):
+**Which to train with.** `lightning.qubit` with adjoint runs a batch one sample at a time;
+`default.qubit` with `diff_method="backprop"` vectorises it. Measured for one training step at
+batch 64 (`examples/benchmark_batching.py --crossover`):
 
 | qubits | `lightning.qubit` / adjoint | `default.qubit` / backprop | backprop vs lightning |
 |---|---|---|---|
@@ -143,12 +148,58 @@ training step at batch 64 (`examples/benchmark_batching.py --crossover`):
 | 16 | 8.85 s, +31 MB | 10.42 s, +3129 MB | about as fast, 100× the memory |
 
 Single runs, which vary by some tens of percent; at 14 and 16 qubits either path can come out
-ahead. So for batched training at 8 to 10 qubits, pass
-`device_name="default.qubit", diff_method="backprop"`: it is 5-12× faster for little memory.
-At 12 qubits it is still about 2.6× faster but takes 16× the memory. From about 14 qubits the
-speed advantage is gone, while backprop's memory keeps growing fourfold per two qubits and
-adjoint's stays flat, so lightning is the better choice there. For single samples lightning is
-faster.
+ahead. For batched training backprop is 5-12× faster at 8 to 10 qubits for little memory, and
+still about 2.6× faster at 12 qubits for 16× the memory. From about 14 qubits the speed
+advantage is gone, while backprop's memory keeps growing fourfold per two qubits and adjoint's
+stays flat, so lightning is the better choice there. For single samples lightning is faster.
+
+That is what the default, `device_name="auto", diff_method="auto"`, does:
+
+| | picks |
+|---|---|
+| up to 12 qubits | `default.qubit` / backprop |
+| above 12 qubits | `lightning.qubit` / adjoint (falling back to `default.qubit` / adjoint without the `lightning` extra) |
+| `shots` set | the size rule's device / parameter-shift |
+| amplitude encoding behind the classical encoder | `default.qubit` / backprop at any size, the only method whose input gradient is correct |
+| an explicit `device_name` | backprop on `default.qubit` and `default.mixed`, adjoint on `lightning.qubit`, `lightning.gpu` and `lightning.kokkos`, parameter-shift on anything else |
+| an explicit `diff_method` | `default.qubit` for backprop, `lightning.qubit` for adjoint, else the size rule |
+
+`hqnn_forge.encoding.resolve_backend` shows the choice for given arguments. The model config,
+and so a checkpoint, records `"auto"`, so a reloaded model resolves it again by these rules,
+from the qubit count and options alone; only the fallback when `lightning` is not installed
+depends on the machine. Pass both names explicitly to pin a backend.
+
+Backprop's memory also grows with the batch. `predict_proba` and the trainer's validation
+currently run their whole input as one batch (chunking is #469), so for large evaluation sets
+near 12 qubits pass `device_name="lightning.qubit"` explicitly.
+
+### Running on hardware
+
+[`examples/hardware_workflow.py`](https://github.com/hqnn-forge/hqnn-forge/blob/main/examples/hardware_workflow.py)
+trains a small classifier the way a quantum device requires, on `default.qubit` standing in for one: `shots`, parameter-shift
+gradients checked against backprop, SPSA, the circuit executions each step costs (counted
+with `qml.Tracker`), and test MCC under shot and depolarizing noise (`shot_sweep`,
+`noise_sweep`). One step on a batch of 32 costs 1568 circuits with parameter-shift and 64 with
+SPSA, which trains the circuit weights while Adam trains the classical head at no extra circuit
+cost. Trained with 1000 shots and evaluated exactly, it scored 0.87 test MCC against 0.83 for
+exact training with backprop and Adam (one seed, 115 test samples).
+
+For a real device, change `DEVICE` to the plugin's device name (for example
+`"braket.aws.qubit"`) and set up its credentials as the plugin documents.
+The library creates the device from its name, so device options go in PennyLane's
+[configuration file](https://docs.pennylane.ai/en/stable/introduction/configuration.html),
+which `qml.device` reads for every device:
+
+```toml
+# config.toml
+[braket.aws.qubit]
+device_arn = "arn:aws:braket:::device/qpu/..."
+```
+
+An option that must be a Python object rather than a string cannot be passed this way, so a
+device that needs one, such as `"qiskit.remote"` (its `backend`), does not work here. The
+library passes `seed` to a plugin device as given, so the example seeds only the simulators in
+`KNOWN_DEVICES`.
 
 ---
 
@@ -255,7 +306,15 @@ loss = loss_fn(logits.squeeze(), y)
 loss.backward()
 ```
 
-See `examples/quick_start.py` for a full training loop on a synthetic imbalanced dataset.
+See `examples/quick_start.py` for a full training loop on a synthetic imbalanced dataset, and
+the API reference for every argument:
+[scikit-learn estimator](https://hqnn-forge.github.io/hqnn-forge/api/sklearn/),
+[preprocessing](https://hqnn-forge.github.io/hqnn-forge/api/preprocessing/),
+[data](https://hqnn-forge.github.io/hqnn-forge/api/data/),
+[evaluation](https://hqnn-forge.github.io/hqnn-forge/api/evaluation/),
+[models](https://hqnn-forge.github.io/hqnn-forge/api/models/),
+[losses and utilities](https://hqnn-forge.github.io/hqnn-forge/api/utils/),
+[training](https://hqnn-forge.github.io/hqnn-forge/api/training/).
 
 ---
 
@@ -371,6 +430,20 @@ total. A seeded hybrid (`init_seed`) gets a control seeded with the same seed.
 Switching a trained model's circuit off with `disable_quantum_layer` measures something
 else, how much that model depends on the circuit.
 
+`LinearClassifier(n_input_features)` is the smallest model with the same interface: one affine
+map to a logit, `n + 1` parameters, a logistic regression when trained with
+`BCEWithLogitsLoss`. `examples/benchmark_rydberg_features.py` uses it and a small
+`ClassicalBaseline` as the heads of a fixed feature map (the Rydberg map with and without
+interactions, the inputs themselves, a frozen gate-based circuit) on identical folds.
+
+The API reference documents each architecture's constructor and the pieces behind it:
+[models](https://hqnn-forge.github.io/hqnn-forge/api/models/),
+[encoding layers](https://hqnn-forge.github.io/hqnn-forge/api/encoding/),
+[circuit primitives](https://hqnn-forge.github.io/hqnn-forge/api/circuits/),
+[initialisers](https://hqnn-forge.github.io/hqnn-forge/api/initializers/),
+[diagnostics](https://hqnn-forge.github.io/hqnn-forge/api/diagnostics/),
+[utilities](https://hqnn-forge.github.io/hqnn-forge/api/utils/).
+
 ---
 
 ## Folder Structure
@@ -381,15 +454,20 @@ hqnn_forge/
 ├── circuits/        Reusable VQC ansatz primitives
 ├── initializers/    Small-angle (restricted-variance) weight initialisation
 ├── preprocessing/   PCA + normalisation, stratified folds, SMOTE (no sklearn runtime dep)
-├── models/          Full hybrid architectures
+├── models/          Full hybrid architectures, their MLP control and a linear classifier
 ├── training/        Train/validate loop with early stopping
 ├── evaluation/      Decision threshold search, confusion metrics, PR-AUC, score per
 │                    parameter, paired Wilcoxon tests, plots (needs matplotlib)
 ├── diagnostics/     Circuit cost (depth, gates, inert parameters), gradient variance,
-│                    Fisher information and effective dimension
+│                    Fisher information and effective dimension; separation measures of a
+│                    fixed feature matrix (distances, Fisher ratio, effective rank, alignment)
 ├── data/            Dataset loader (Kaggle credit-card fraud)
 ├── utils/           Imbalance-robust losses, checkpoint save/load, quantum-layer ablation,
 │                    eval-mode context manager
+├── rydberg/         Atom register (positions, C6/r⁶ couplings, blockade radius), the dense
+│                    Rydberg Hamiltonian of a small neutral-atom array, and its time evolution
+│                    under dephasing (Lindblad solver, excitation readout); a fixed feature map
+│                    from inputs to excitation probabilities, exact or from shots
 ├── kernels.py       Quantum kernel matrices from the encoding layers (QSVM)
 ├── noise.py         Noise channels (depolarizing, damping, flips), post hoc or during training
 └── sklearn.py       scikit-learn estimator wrapper (cross_val_score, GridSearchCV, Pipeline);
@@ -457,12 +535,12 @@ uv run --frozen --all-extras vermin --no-tips -t=3.11- --violations --eval-annot
     --exclude long hqnn_forge tests examples .github/scripts
 ```
 
-[`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md#linting) lists every command the lint job runs.
+[`CONTRIBUTING.md`](https://github.com/hqnn-forge/hqnn-forge/blob/main/CONTRIBUTING.md#linting) lists every command the lint job runs.
 
 The full test suite takes a few minutes. For the edit–test loop, leave out the tests marked
 `slow` (end-to-end training, the gradient-variance physics checks, parameter-shift batching,
 repeated fits and bootstraps), which account for most of that time; CI always runs everything
-(see [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md#testing)):
+(see [`CONTRIBUTING.md`](https://github.com/hqnn-forge/hqnn-forge/blob/main/CONTRIBUTING.md#testing)):
 
 ```bash
 pytest -m "not slow"   # about a minute
@@ -473,7 +551,8 @@ pytest                 # the full suite, as CI runs it
 
 ## Methodology
 
-[`docs/methodology.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/methodology.md)
+The [methodology page](https://hqnn-forge.github.io/hqnn-forge/methodology/)
+([source](https://github.com/hqnn-forge/hqnn-forge/blob/main/docs/methodology.md))
 states the rules the comparisons follow: how the classical control is matched, how folds,
 oversampling and thresholds are handled, which statistical test applies when, the equal tuning
 budget, what the noise sweep models, and what an experiment record captures.
@@ -483,7 +562,7 @@ budget, what the noise sweep models, and what an experiment record captures.
 ## Documentation
 
 The API reference, generated from the docstrings, is at
-**<https://g8rdier.github.io/hqnn-forge/>**. To build it locally:
+**<https://hqnn-forge.github.io/hqnn-forge/>**. To build it locally:
 
 ```bash
 uv run --frozen --group docs mkdocs serve   # or: mkdocs build --strict, as CI does
@@ -493,10 +572,10 @@ uv run --frozen --group docs mkdocs serve   # or: mkdocs build --strict, as CI d
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](https://github.com/g8rdier/hqnn-forge/blob/main/CONTRIBUTING.md) for the
+See [`CONTRIBUTING.md`](https://github.com/hqnn-forge/hqnn-forge/blob/main/CONTRIBUTING.md) for the
 issue/branch/PR workflow, commit conventions, and versioning policy this project follows. To add
 a dataset loader, an encoding layer or a variational block, see
-[`docs/extending.md`](https://github.com/g8rdier/hqnn-forge/blob/main/docs/extending.md) for the
+[`docs/extending.md`](https://github.com/hqnn-forge/hqnn-forge/blob/main/docs/extending.md) for the
 conventions each must keep and the tests each must pass.
 
 ---
@@ -504,7 +583,7 @@ conventions each must keep and the tests each must pass.
 ## Citing
 
 If you use hqnn-forge in research, please cite it.
-[`CITATION.cff`](https://github.com/g8rdier/hqnn-forge/blob/main/CITATION.cff) holds the citation
+[`CITATION.cff`](https://github.com/hqnn-forge/hqnn-forge/blob/main/CITATION.cff) holds the citation
 metadata, and GitHub's **Cite this repository** button in the sidebar turns it into BibTeX or
 APA.
 
@@ -554,3 +633,9 @@ APA.
 - Mukhoti et al. (2020) — *Calibrating deep neural networks using focal loss*
 - Spall (1992) — *Multivariate stochastic approximation using a simultaneous perturbation gradient approximation*
 - Spall (1998) — *Implementation of the simultaneous perturbation algorithm for stochastic optimization*
+- Kull et al. (2019) — *Beyond temperature scaling: obtaining well-calibrated multi-class probabilities with Dirichlet calibration*
+- Bernien et al. (2017) — *Probing many-body dynamics on a 51-atom quantum simulator*
+- Wurtz et al. (2023) — *Aquila: QuEra's 256-qubit neutral-atom quantum computer*
+- Saffman, Walker & Mølmer (2010) — *Quantum information with Rydberg atoms*
+- Fisher (1936) — *The use of multiple measurements in taxonomic problems*
+- Roy & Vetterli (2007) — *The effective rank: a measure of effective dimensionality*

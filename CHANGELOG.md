@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Packaging (`pyproject.toml`, setuptools), a PEP 561 `py.typed` marker and the Apache-2.0
+- Packaging (`pyproject.toml`, `uv_build`), a PEP 561 `py.typed` marker and the Apache-2.0
   `LICENSE` file (#2, #86, #87)
 - `PCANormalizer`: pure-NumPy PCA plus standardisation, with optional scaling of the
   components to (−π, π) for angle encoding (#4). It warns when degenerate eigenvalues make
@@ -238,10 +238,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkpoints (weight-safe, `"depolarizing"` for older files), selecting
   `"amplitude_damping"` (T1), `"phase_damping"` (T2 dephasing), `"bit_flip"` or
   `"phase_flip"`, each with its own `p` range (`[0, 1]`; depolarizing stays `[0, 0.75]`). A
-  readout error is `"bit_flip"` at `position="end"`, the symmetric case only: an asymmetric
-  one (`p01 ≠ p10`) is not modelled. `noise_method="trajectories"` samples the Pauli channels
-  (depolarizing, bit flip, phase flip), including inside `apply_shots`; the damping channels
-  need `"density"` (#336)
+  symmetric readout error is `"bit_flip"` at `position="end"`; an asymmetric one
+  (`p01 ≠ p10`) is the separate `readout_error` below (#358). `noise_method="trajectories"`
+  samples the Pauli channels (depolarizing, bit flip, phase flip), including inside
+  `apply_shots`; the damping channels need `"density"` (#336)
 - Calibration of binary probabilities in `hqnn_forge.evaluation`: `brier_score`,
   `expected_calibration_error` and `reliability_curve` (uniform or equal-count bins), the
   post-hoc `TemperatureScaler` and `PlattScaler` fitted on a validation split (raising when
@@ -249,6 +249,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TrainingHistory.temperature` for the returned weights, and per-fold `brier`/`ece` with
   `brier_mean`/`ece_mean` in `run_benchmark` (NaN for a fold whose probabilities are not
   finite) (#340)
+- `calibration="temperature"` or `"platt"` on `HybridClassifierEstimator` (two classes): fitted
+  on the validation split and applied in `predict_proba`, stored as `calibrator_`. With
+  `threshold="optimal"`, `predict` is unchanged and `threshold_` is mapped through the
+  calibrator. A split with no finite fit warns and stays uncalibrated (#359)
+- Multiclass calibration: `multiclass_brier_score`, `top_label_ece`, `classwise_ece` and
+  `MulticlassTemperatureScaler` (one temperature shared by the K logits, raising when the
+  cross-entropy has no finite optimum) (#360)
 - `examples/benchmark_batching.py`: inference and training-step time of the per-sample split,
   native broadcasting, `batch_obs` and `default.qubit`/backprop for every encoder, with a
   correctness check, plus a crossover by qubit count with peak memory; the README now says
@@ -257,10 +264,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `mkdocs build --strict` on every PR so a broken cross-reference, or a name in a documented
   module's `__all__` with no entry, fails CI, and deployed to GitHub Pages from `main` once
   Pages is enabled; a `docs` dependency group installs the tools (#342)
+- `seed` on the encoding layers and classifiers seeds the device's shot sampling, which
+  `torch.manual_seed` does not reach, so seeded shot-based runs repeat exactly; `seed` is a
+  weight-safe checkpoint argument. `SPSA(..., model=model)` starts both evaluations of a step
+  from the same device generator state, which cut the shot-noise variance of its gradient
+  estimate about fourfold; `train_model` passes the model it trains when `model=` is not
+  given (#354, #369)
+- `examples/hardware_workflow.py` and a README section: shots, parameter-shift checked against
+  backprop, SPSA, per-step circuit counts with `qml.Tracker`, and shot and noise sweeps, with
+  how to point it at a real device (#356)
+- A results page, `docs/results/trajectory-noise-study.md`, with its script
+  `examples/study_trajectory_noise.py` and raw data: trajectory against density noise training
+  on a breast-cancer proxy at 4 and 6 qubits. The `noise_method` documentation carries its
+  recommendation: `"density"` where it fits, otherwise `"trajectories"` with
+  `noise_trajectories ≥ 4` and a longer training budget (#311, #343)
+- A results page, `docs/results/trajectory-collapse-study.md`, with its script
+  `examples/study_trajectory_collapse.py` and raw data: lower learning rates, gradient clipping,
+  a noise warm-up and more draws against trajectory runs that had not trained within 30 epochs,
+  on the same proxy over 10 seeds. Only `noise_trajectories = 8` trained in every run, so the
+  `noise_method` and `noise_trajectories` documentation now recommends 8 or more, or a longer
+  training budget with fewer draws (#347, #367)
+- `noise_method="trajectories"` for amplitude and phase damping: phase damping is sampled as the
+  phase flip it equals, amplitude damping by weighted Kraus branches whose mean is the density
+  channel exactly; the latter needs backprop, parameter-shift or finite-diff, `default.qubit` or
+  `lightning.qubit`, and exact expectation values (#357)
+- An asymmetric readout error `(p01, p10)`, applied exactly to each ⟨Z⟩ as
+  `(1 − p01 − p10)⟨Z⟩ + (p10 − p01)`: `apply_readout_error` post hoc,
+  `noise_sweep(..., channel="readout")`, and `readout_error=` on the layers and classifiers for
+  training (weight-safe in checkpoints). The map acts on the layer's output: a layer's own
+  `readout_error` is suppressed inside `apply_depolarizing_noise` like its other training
+  noise, and `apply_readout_error` refuses a layer without `TrainingNoiseMixin`. On a sampled
+  layer the mean is exact but the shot noise is scaled by `|1 − p01 − p10|`, smaller than that
+  of flipped shots (#486). A model trained with `readout_error` learns its offset, and
+  `predict_proba` runs without it unless called inside `apply_readout_error` (#488) (#358)
+- A model specification page, `docs/rydberg-model.md`, for a simulated Rydberg-atom feature
+  map: units, Hamiltonian and its sign and ordering conventions, chain geometry, the detuning
+  encoding, readout, Markovian dephasing, the closed-form limits each convention is checked
+  against, and which assumptions a current device supports (#495, #503)
+- `hqnn_forge.rydberg`: `AtomRegister` (atom positions in µm, `chain` and `ring` constructors,
+  the couplings `interaction_matrix(c6)` = `C6/r⁶` and `blockade_radius(c6, omega)`; positions
+  that require grad are refused) and
+  `rydberg_hamiltonian(register, omega, delta, *, c6, interactions=True)`, the dense
+  `2^n × 2^n` Hamiltonian of `docs/rydberg-model.md` as a `complex128` torch tensor, for one
+  pulse or a batch, with atom `i` on tensor factor and PennyLane wire `i`. `DEFAULT_C6` is the
+  ⁸⁷Rb `70S` value; `rydberg_hamiltonian` refuses registers above `MAX_ATOMS` = 10 atoms, the
+  register itself has no limit (#496, #504)
+- `hqnn_forge.rydberg.evolve(hamiltonian, t, *, gamma=0.0, n_steps=None)`: the density matrix
+  `ρ(t)` of a batch of time-independent Hamiltonians, starting with every atom in `|g⟩`, under
+  Markovian dephasing with the local collapse operators `√γ n_i` (a single-atom coherence
+  decays at `γ/2`). `gamma=0` is exact from one eigendecomposition; `gamma>0` uses a
+  symmetric (Strang) splitting with the exact elementwise dissipator, second order in the step,
+  and requires `n_steps`. `readout(rho, *, pairs=False)` returns `⟨n_i⟩` for every atom and
+  optionally `⟨n_i n_j⟩` for every pair, from the diagonal of ρ. Gradients through `evolve`
+  are wrong where the Hamiltonian has degenerate eigenvalues (#505) (#497, #506)
+- `hqnn_forge.rydberg.RydbergFeatureMap(register, encoding, *, c6, gamma, n_steps=None,
+  interactions=True, correlations=False)`: a fixed map from a batch of inputs to the excitation
+  probabilities `⟨n_i⟩` of a Rydberg array (optionally followed by the pair correlations
+  `⟨n_i n_j⟩`), a preprocessing step like `PCANormalizer` and not an encoding layer.
+  `transform(X)` evolves the samples in chunks and returns exact expectation values, or with
+  `shots=S` and a `torch.Generator` estimates from `S` sampled bitstrings; `states(X)` returns
+  the density matrices; `get_config()` records positions, `C6`, Ω, `T`, γ, the detuning bound
+  and the solver steps as JSON-serialisable data that rebuilds the map. `n_steps` is required
+  when `gamma > 0`. `PulseEncoding(n_features, *, omega, t=None, delta_max=None)` is the
+  encoding of `docs/rydberg-model.md`, `Δ_i = Δ_max · σ(x_i)` with one input per atom, and
+  defaults to `ΩT = π` and `Δ_max = √3 Ω` (#499, #508)
+- `hqnn_forge.diagnostics.separation_measures(F, y)`: measures of how a fixed feature matrix
+  separates inputs and two classes, without a trained head: the mean pairwise Euclidean
+  distance within and between classes and their ratio (`pairwise_distances` returns the two
+  sets of distances), `fisher_discriminant_ratio` along the best linear direction (the squared
+  Mahalanobis distance between the class means, with the pooled within-class covariance),
+  `effective_rank` of the feature covariance (exponential of the entropy of its normalised
+  eigenvalues), and the alignment of `linear_feature_kernel(F)` = `F Fᵀ` with the labels
+  through `kernel_target_alignment`. An undefined ratio is NaN and perfect separation `inf`.
+  `docs/rydberg-model.md` states which statement each supports for the Rydberg feature map
+  next to its state kernel, and that none predicts the score of a head (#500, #516)
+- `hqnn_forge.models.LinearClassifier(n_input_features, *, init_seed=None)`: one affine map to a
+  logit with the classifiers' interface (`predict_proba`, `get_config`, checkpoints), `n + 1`
+  parameters; trained with `BCEWithLogitsLoss` it is a logistic regression. It is the linear
+  head `ClassicalBaseline`, which needs a hidden layer, cannot be (#501, #517)
+- `examples/benchmark_rydberg_features.py`: a benchmark runner for the Rydberg feature map. On
+  identical folds, validation splits and seeds it trains a linear and a small MLP head on the
+  interacting features (arm A), on the same map with `interactions=False` (B), on the
+  PCA-reduced inputs themselves (C) and on the `⟨Z_i⟩` of a frozen random angle-embedding
+  circuit (D), plus a trained `HybridBinaryClassifier` as a marked, less comparable row, over a
+  grid of `V/Ω` (through the spacing) and `γ/Ω` at fixed `ΩT`, with the same random-search
+  budget for every arm, a feature cache on disk keyed by the data fingerprint and the map's
+  `get_config()`, a UCI loader or a synthetic positive control whose label depends on products
+  of inputs on neighbouring atoms, and one strict-JSON line per arm, head, grid point and fold
+  (scores, feature dimension, parameters, simulation and training seconds, separation
+  measures, seeds, fold indices, environment). Arm B is a classical model, so `A − B` measures
+  what interaction-induced mixing of inputs adds, not "quantum" against "classical";
+  `--quick` is a smoke test (#501, #517)
+- `separation_measures` gains `max_rows` and `seed` keywords to bound memory via deterministic
+  stratified subsampling, exported as `stratified_subsample_indices` from
+  `hqnn_forge.diagnostics`; `examples/benchmark_rydberg_features.py` exposes them through
+  `--max-separation-rows` and `--separation-seed`, and computes non-interacting arm B once per
+  dephasing rate and fold (#519, #520)
 
 ### Changed
+- `shot_sweep` evaluates and scores each exact (`shots=None`) reference once, repeating
+  its probabilities and score across `n_repeats` without changing finite-shot sampling (#532)
+- `numpy.random.seed` no longer makes the shot samples of an unseeded device repeat: the
+  built-in simulators now draw an unseeded device's generator from OS entropy.  Pass the
+  layer's or classifier's `seed` for repeatable shot-based results (#533)
 - The package metadata links the repository, issue tracker and changelog, and the README's
   image and file links are absolute, so both work on PyPI (#327)
+- The README links the API reference site near the top and from Quick Start, Architecture and
+  Methodology, and the package metadata gains a `Documentation` URL (#453)
 - The quantum layers run a whole batch in one QNode call instead of looping over samples
   (#104)
 - `predict_proba` and `predict` run in eval mode whatever mode the model is in, restoring every
@@ -333,6 +443,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FisherSpectrum.parameter_slices` and `block(name)` locate each tensor, and `parameters=`
   measures a subset, whose matrix is the matching block. `effective_dimension` counts every
   tensor in `d` but, like `gradient_variance`, draws only the `weights` angles (#337)
+- **Behaviour change:** `device_name` and `diff_method` default to `"auto"` everywhere
+  (encoding layers, QNode factories, classifiers including `published_shnn()`, the
+  scikit-learn estimator): `default.qubit` with backprop up to 12 qubits, `lightning.qubit`
+  with adjoint above, parameter-shift with `shots`, and backprop for amplitude encoding behind
+  the classical encoder. The default was `lightning.qubit` with adjoint, about 12× slower for
+  batched training at the default 8 qubits (#341, #349). Outputs and gradients agree with the
+  old default to float32 rounding, but Adam can take different steps on inert weights (zero
+  gradient up to rounding), so training runs are not bit-identical to earlier ones; pass
+  `device_name="lightning.qubit", diff_method="adjoint"` to reproduce them. Checkpoints
+  written before this change record their explicit names and load unchanged; new ones record
+  `"auto"`, and the encoding layers' `repr` shows the device and method actually used (#368)
 - `MulticlassHybridClassifier` builds the same encoder → circuit → dropout trunk as
   `HybridBinaryClassifier`, from shared code, so it now accepts every trunk option:
   `embedding_rotation`, `entangler`, `readout` (the head reads `Linear(n_outputs, n_classes)`),
@@ -362,8 +483,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The README shows how a benchmark runs as a Mermaid diagram (matched control, shared per-fold
   rules, the reading of the Wilcoxon result), and its architecture diagrams are Mermaid
   instead of ASCII (#451)
+- Switched the package build backend from setuptools to `uv_build` and updated the
+  package metadata for PEP 639-compatible license handling (#458)
+- `expressibility` and `entangling_capability` run each chunk of sampled states as one
+  broadcast tape instead of tape by tape, with the same draws and the same states up to
+  round-off (bit-identical for every encoding layer of this package at 3 qubits, within a
+  few 1e-17 for an IQP layer at 12): the default 5000 pairs of a 2-layer angle layer went
+  from 35 s to 8 s at 4 qubits and from 78 s to 15 s at 8. A circuit whose operations do not
+  take a batch of parameters runs tape by tape as before (#374)
+- `examples/benchmark_rydberg_features.py`: every option has a help string, and `--help`
+  shows its default (#526)
+- `examples/benchmark_rydberg_features.py`: clarify that `--quick` runs the predefined `QUICK`
+  smoke-test configuration on the positive control and ignores conflicting grid, model,
+  dataset-selection, and training options (#563)
 
 ### Fixed
+- Pin PyPI diagram links to their release README, replace tilde-fenced Mermaid blocks and blocks
+  with whitespace before `mermaid`, and use GitHub-compatible anchors for whitespace, inline links,
+  closing `#` sequences and repeated headings (#534)
+- Building a classifier or encoding layer on a built-in simulator (`default.qubit` or a
+  lightning device), with or without `init_seed`, no longer advances NumPy's global RNG, and
+  neither do train-mode density noise, `encoded_states`, `quantum_kernel_matrix`,
+  `encoded_density_matrices`, `QuantumKernelClassifier.fit` or `expressibility`: their devices
+  get an explicit `seed=None` instead of PennyLane's default, which draws from `np.random` (#533)
+- Replace Mermaid diagrams with links to the GitHub repository in the package description at release
+  time, so PyPI does not display raw diagram source (#485)
 - `validate_device_shots` detects sampling-only devices from device capabilities and
   preprocessing (`no_analytic`) rather than relying solely on deprecated device-level shots,
   raising a construction-time `ValueError` when `shots=None` was requested (#462)
@@ -379,7 +523,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LAPACK build (#81)
 - The initialiser tests had too little power to reject a flat σ, and one failed at random
   (#22, #105)
-- `setuptools>=61` is required, the first version that reads `pyproject.toml` metadata (#135)
 - Device fallback raised `AttributeError` on PennyLane 0.45, where `qml.DeviceError` no longer
   exists; the chain now catches `pennylane.exceptions.DeviceError` and is exercised by a test
   (#155)
@@ -412,6 +555,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AmplitudeEncodingLayer`, because they built their sample input with `n_qubits` features;
   they now use the layer's input width and `prepare_inputs`, and the default amplitude sample
   shows the full state preparation, an upper bound on the gate count for any input (#279)
+- `circuit_summary` raised `AttributeError` on PennyLane 0.46, whose `specs` resources drop
+  `num_gates`, `gate_types` and `gate_sizes`; it now counts depth and gates on the decomposed
+  tape itself and gives the same summary on 0.45 and 0.46 (#364)
+- `examples/benchmark_rydberg_features.py` served cached features computed by older code or
+  other library versions as hits. The cache key now also holds the Python, `hqnn_forge` and
+  package versions of `experiment.environment()` and a SHA-256 of the source of `hqnn_forge`
+  and of the script, so a change of either computes anew (entries of an earlier cache
+  directory are no longer read); each entry stores the environment it was computed in, and
+  the lines record it as `feature_environment`, and their `tuning` per tuning fold as
+  `feature_environments` and `feature_cache_hits` (#522, #543)
 
 ### Removed
 - `PCANormalizer`'s `copy` option, which never had an effect (#77)

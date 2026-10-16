@@ -423,7 +423,7 @@ def _evaluate_config(
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)
         model = _build(model_name, hybrid, X.shape[1])
-        mcc = _fit_and_score(
+        return _fit_and_score(
             model,
             loss,
             X_fit,
@@ -438,7 +438,6 @@ def _evaluate_config(
             patience=settings["patience"],
             batch_seed=seed,
         ).mcc
-    return mcc
 
 
 def _tune(
@@ -619,8 +618,9 @@ def run_benchmark(
         deviation (``ddof=1``) of its seeds' MCCs, averaged over folds.
         Default 1: one seed, as before.  With more than one, ``hybrid`` must
         build its model with ``init_seed=None`` (a model's own seed would
-        override the runner's and repeat the same weights); a ``ValueError``
-        is raised otherwise.
+        override the runner's and repeat the same weights), and a sampling one
+        (``shots``) with ``seed=None`` too (a device seed would repeat the same
+        shot noise); a ``ValueError`` is raised otherwise.
     noise_levels, noise_position:
         Also score each trained hybrid model on its test rows under
         depolarising noise of each probability (inserted as
@@ -711,7 +711,7 @@ def run_benchmark(
         seed_stds: dict[str, list[float]] = {m: [] for m in MODELS}
         briers: dict[str, list[float]] = {m: [] for m in MODELS}
         eces: dict[str, list[float]] = {m: [] for m in MODELS}
-        seconds: dict[str, float] = {m: 0.0 for m in MODELS}
+        seconds: dict[str, float] = dict.fromkeys(MODELS, 0.0)
         n_parameters: dict[str, int] = {}
         architecture: dict[str, str] = {}
 
@@ -777,6 +777,19 @@ def run_benchmark(
                                 f"init_seed=None; got init_seed="
                                 f"{model.get_config()['init_seed']}, which gives "
                                 f"every seed the same initial weights."
+                            )
+                        config = model.get_config()
+                        if (
+                            n_seeds > 1
+                            and config.get("seed") is not None
+                            and config.get("shots") is not None
+                        ):
+                            # Likewise for a seeded sampling device: every
+                            # repeat would replay the same shot noise.
+                            raise ValueError(
+                                f"n_seeds={n_seeds} needs a sampling hybrid built "
+                                f"with seed=None; got seed={config['seed']}, which "
+                                f"gives every seed the same shot noise."
                             )
                         fit = _fit_and_score(
                             model,
